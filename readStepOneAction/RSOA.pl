@@ -7,8 +7,8 @@
 use strict;
 use warnings;
 
-my $inputFileName = "StepOneAction.java";
-my $outputFileName = "out.txt";
+my $inputFileName = "in/StepOneAction.java";
+my $outputFileName = "out/out.txt";
 
 print "Lecture du fichier : $inputFileName\n";
 open (my $inputFile, '<', $inputFileName) or die "Could not open file $inputFileName";

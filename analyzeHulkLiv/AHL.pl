@@ -5,7 +5,7 @@ use warnings;
 
 # egrep "^\w+:" bin/hulkliv
 
-my $inputFileName = "hulkliv";
+my $inputFileName = "in/hulkliv";
 
 my $defaultOutputFileName = "out/aside";
 my $commentsOutputFileName = "out/comments";

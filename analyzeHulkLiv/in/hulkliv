@@ -1,0 +1,3069 @@
+#!/usr/local/bin/tcsh
+# ------------------------------------------------------------------------
+## Auteur : Ahmed LAZREG
+## Date   : 02/05/2012
+##
+## Ce script permet de livrer les donnees SGML XML EL a JOUVE
+## ------------------------------------------------------------------------
+## 09/10/2012 AL
+## Ce script est a utilser en mode debug
+## Il realise toutes les tapes necessaires pour mettre a jour les uc ucx urx uci 
+## ------------------------------------------------------------------------
+## 18/10/2012 al
+## prevoir 4 options : -test|-prod [dossierSgm] [etape] [stop]
+##
+## ------------------------------------------------------------------------
+## 05/03/2013 al
+## ajout option noeaxalead pour sauter l'etape exalead
+## ------------------------------------------------------------------------
+## 28/05/2013 alazreg
+## Certains documents (LISTE INDEX TAG) ne doivent pas rester dans l'historique de consultation.
+## 
+## Pour cela ajouter un element <historique enabled="false"> dans les UC type-ouvrage
+## Voir dans le dossier $ELA_LIV/uc/type-ouvrage/type-ouvrage.*.uc.xml
+##
+## ------------------------------------------------------------------------
+## 21/06/2013 alazreg
+##
+## 1. Parfois nous avons besoin de tester juste quelques fichiers sans relancer une matiere en particulier
+##    Pour cela ajout de l'argument -addfiles <dossier_addfiles>
+##    Si l'argument -addfiles est fourni alors copier les fichiers SGML qui sont dans dossier_addfiles/*.sgm
+##
+## 2. Je prevois aussi que le parametre -mat ne soit pas donne en argument de la ligne de commande
+##    Ajout du test if ($liste_mat != "") pour que le script ne plante pas si la liste des matieres est vide
+## ------------------------------------------------------------------------
+## 20/11/2013 alazreg
+## ajout gestion sandbox4
+## ------------------------------------------------------------------------
+# 12/12/2016 ALAZREG 
+# AJOUT GESTION INTERRUPTION PAR CTRL +C => onintr intrdefault
+# ajout variable liste_verrous pour supprimer tous les verrous posés par le script hulkliv
+# ------------------------------------------------------------------------
+
+/usr/local/ela/bin/cmdlog.tcsh $0 $*
+
+## ------------------------------------------------------------------------
+## Variables globales
+## ------------------------------------------------------------------------
+
+onintr intrdefault
+set liste_verrous = ""
+
+# if ($USER != "sfouzi") then
+	# echo "Intervention en cours. Merci de relancer le traitement ulterieurement."
+	# echo "En cas d'urgence, contacter sfouzi/XDEV"
+	# exit 0
+# endif
+
+
+set hulkliv_date_lancement = `date +'%d/%m/%Y %H:%M'`
+## YE 30/01/2014 Mantis 4380
+## Pour controler la date d execution du prog et ecrire cette date dans les fichier  ELA_LIV/dateLancement/(dpxx.txt/hulkliv.txt) 
+set hulkliv_date_lancement_jrp = `date +'%d/%m/%Y %H:%M:%S'`
+set jouvecmd = ""
+
+## 28/06/2013 alazreg
+## on traite par defaut la jrp
+## sinon il faudrait passer l'argument -sources qui déclenche le traitements des txt codes docam qui sont inutiles lorsqu'on fait une matiere seule
+set G_bTraiterJrp = true
+
+## 26/04/2013 MB : ajout option bofip pour traiter Bofip sans les autres sources
+set G_bTraiterTxtSeul = false
+set G_bTraiterBofipSeul = false
+set G_bTraiterCodesSeul = false
+set G_bTrtJouve = true
+set G_bTrExalead = true
+set bpurge = true
+set balimhulk = true
+set barchive = true
+set G_bjrpmat = true
+
+set dirAddFiles = ""
+set dirAddTxtFiles = ""
+set dirAddJrpFiles = ""
+
+set sendmailcmd = "/usr/local/ela/bin/sendmaildpm"
+## 30/01/2014 Mantis 4380
+set breferancedateJrp = false
+set breferancedateTxt = false
+set referenceDateJrp = ""
+set referenceDateTxt = ""
+set bsources = false
+
+## ajout booleen pour le debug
+set G_b_addfiles_auto = true
+# 23/03/2015 sfouzi mantis 9800 ajout argument forcereload
+# set G_bForcereload = true
+set G_bForcereload = false
+
+## ------------------------------------------------------------------------
+## 01/10/2012 AL
+## On prevoit ici un status pour le mail final qui sera OK, ERREURS ou WARN
+## Chaque etape dessous qui se termine en erreur ou warning devra changer la valeur de la variable statusMailFinal
+## ------------------------------------------------------------------------
+set statusMailFinal = "OK_ERREUR_WARN"
+set bEnvoyerTrtJouve = true
+
+set destinataires = "alazreg mbaziz yendichi sfouzi gcastel $user"
+##set destinataires = "alazreg mbaziz ytruchot"
+## 27/12/2012 al/mb : ajout seuil pour controler que les fichiers patch sont générés
+##                    + seuilFdoc pour controler que les FDOC (attribut M) sont bien générés
+set seuilPatchSgm = 10
+set seuilFdoc = 10
+
+set sujet = "HULK : debut traitements EL Prod"
+
+## Positionner l'environnement HULK
+source /usr/local/ela/bin/hulk.csh
+setenv HULKENV PROD
+setenv ELSLIVNAME HULK
+
+
+set dateprod = `date +'%Y%m%d-%H%M%S'`
+
+set bstop = false
+set etape = ""
+
+#############################################################
+## 27/05/2013 alazreg
+#############################################################
+## mode : prod, test ou sandbox1
+##
+## il y a confusion entre les scripts hulkliv et hulklivtest lorsqu'ils sont lancés avec les options prod ou test
+## pour réduire cette confusion les deux scripts ne prennent plus le parametre prod ou test
+## La valeur "prod" ou "test" est initialisée directement dans les scripts respectifs
+## mode par defaut "prod" pour hulkliv
+## mode par defaut "test" pour hulklivtest
+##
+## sandbox1 est considéré aujourd'hui comme du test
+## si necessaire on peut passer le parametre "sandbox1" au script hulklivtest pour modifier le mode "test" en "sandbox1"
+##
+## ------------------------
+## Exemples de lancements :
+## ------------------------
+## hulkliv -mat dpxx sources (prod)
+## hulklivtest -mat dpxx sources (test)
+## hulklivtest sandbox1 -mat dpxx sources (sandbox1)
+#############################################################
+set smode = "prod"
+
+## ---------------------------------------------------------------------
+## debut handle_cmd_line
+## ---------------------------------------------------------------------
+handle_cmd_line:
+
+set option = "na";
+
+
+## ---------------------------------------------------------------------
+## Ne pas récupérer le sources a chaque hulkliv
+## car cela prend du temps de traitement
+## Il faudra préciser "-mat sources" sur la ligne de commande si on veut les sources
+## ---------------------------------------------------------------------
+
+set liste_mat_dpxx = "dp01 dp02 dp03 dp04 dp05 dp06 dp09 dp10 dp11 dp12 dp13 dp14 dp15 dp16 dp17 dp18 dp21 dp22 dp26 dp34 dp36"
+
+set liste_mat_gpxx = "gp20 gp23 gp25 gp59 gp66 gp67 gp68 gp69 gp74 gp76 gp95"
+
+##set liste_mat_toutes = "dp01 dp02 dp03 dp04 dp05 dp06 dp09 dp10 dp11 dp12 dp13 dp14 dp15 dp16 dp17 dp18 dp21 dp22 dp26 dp34 dp36 gp20 gp23 gp25 gp59 gp66 gp67 gp68 gp74 lp35"
+
+set liste_mat_toutes = "$liste_mat_dpxx $liste_mat_gpxx lp35"
+
+set list_dp_form = "dp01 dp02 dp04 dp05 dp06 dp09 dp10 dp11 dp13 dp18 dp21 dp22 dp26 dp34"
+# set list_dp_form = "dp01 dp02 dp04 dp06 dp09 dp10 dp11 dp13 dp18 dp21 dp22 dp26 dp34"
+
+##set liste_mat = "sources";
+set liste_mat = "";
+
+set ela_liv = "";
+set ela_liv_sgm = "";
+##set smode = "na"
+set bstop = false
+set etape = ""
+
+set s_alltxt = ""
+set s_alljrp = ""
+
+# YE 13/04/2015
+set option = "datemaj"
+set bdatemaj = false
+set datemaj = ""
+
+foreach arg ($argv)
+    echo "arg = $arg"
+    switch($arg)
+
+	case "no_addfiles_auto":
+	case "noaddfilesauto":
+	case "-noaddfilesauto":
+		set G_b_addfiles_auto = false
+	breaksw
+
+#############################################
+## 27/05/2013 alazreg	
+#############################################
+## Les deux arguments prod et test sont initialisés directement dans les scripts hulkliv et hulklivtest
+#############################################
+
+
+	case "-nojouve":
+	case "nojouve":
+	    set G_bTrtJouve = false
+	breaksw
+
+	## 04/07/2013 alazreg
+	## ajout -nojrp pour ne pas traiter la jrp par defaut
+	case "-nojrp":
+	case "nojrp":
+	    set G_bTraiterJrp = false
+	breaksw
+
+	case "-nopurge":
+	case "nopurge":
+	    set bpurge = false
+	breaksw
+
+	case "-jrp":
+	case "jrp":
+	    set G_bjrpmat = false
+	breaksw
+
+	case "-noarchive":
+	case "noarchive":
+	    set barchive = false
+	breaksw
+
+
+	case "-noalimhulk":
+	case "noalimhulk":
+	    set balimhulk = false
+	breaksw
+
+
+
+	case "-noexalead":
+	case "noexalead":
+	    set G_bTrExalead = false
+	breaksw
+
+	
+	## tous les arguments qui viennent apres -mat sont les matieres a traiter
+	## exemple : hulkliv prod -mat dp02 dp05 gp74
+	case "-mat":
+	case "-matiere":
+	    set option  = "-mat"
+	breaksw
+
+	case "-addfiles":
+	case "addfiles":
+	    set option  = "-addfiles"
+	breaksw
+
+# 18/09/2014 sfouzi
+# ajout option addtxtfiles pour traiter des textes unitaires
+case "-addtxtfiles":
+case "addtxtfiles":
+set option = "-addtxtfiles"
+breaksw
+
+case "-addjrpfiles":
+case "addjrpfiles":
+	set option = "-addjrpfiles"
+breaksw
+
+	case "-d":
+	    set option  = "-d"
+	breaksw
+
+	case "stop":
+	    set bstop = true
+	breaksw
+
+	case "step":
+	case "-step":
+	case "etape":
+	case "-etape":
+	case "tache":
+	case "-tache":
+	    set option  = "-etape"
+	breaksw
+
+	## YE 30/01/2014 Mantis 4380
+	case "-jrpdepuis":
+	case "jrpdepuis":
+		set option = "-jrpdepuis"
+	breaksw 
+	
+	## YE 30/01/2014 Mantis 4380
+	case "-txtdepuis":
+	case "txtdepuis":
+		set option = "-txtdepuis"
+	breaksw 
+	
+	## YE 15/05/2014 Mantis 4380
+	case "alltxt":
+	case "-alltxt":		
+		set referenceDateTxt = "01/01/2007"
+		set breferancedateTxt = true
+		set s_alltxt = "alltxt"
+	breaksw 
+
+	## YE 15/05/2014 Mantis 4380
+	case "alljrp":
+	case "-alljrp":		
+		set referenceDateJrp = "01/01/2007"
+		set breferancedateJrp = true
+		set s_alljrp = "alljrp"
+	breaksw 
+	
+		## YE 13/04/2015 Ajout argument pour forcer la date de maj des dpxx
+	case "datemaj":
+	case "majdate":		
+	case "-majdate":		
+	case "-datemaj":		
+		set option = "datemaj"
+	breaksw
+	
+	default:
+	    if ("$option" == "-addfiles") then
+			set dirAddFiles = "$arg"
+	    endif
+		# 18/09/2014 sfouzi
+		# ajout option addtxtfiles pour traiter des textes unitaires
+		if ("$option" == "-addtxtfiles") then
+			set dirAddTxtFiles = "$arg"
+		endif
+
+	# ajout option addjrpfiles pour traiter des jrp unitaires
+		if ("$option" == "-addjrpfiles") then
+			set dirAddJrpFiles = "$arg"
+		endif
+
+	    if ("$option" == "-mat") then
+		#############################################
+		## 27/05/2013 alazreg
+		## ajout des options gpxx et dpxx
+		## gpxx pour traiter tous les gp
+		## dpxx pour traiter tous les dp sauf les gp
+		#############################################
+			
+		if ($arg == "toutes" || $arg == "all") then
+		    set liste_mat = "$liste_mat $liste_mat_toutes"
+		else if ($arg == "dpxx") then
+		    set liste_mat = "$liste_mat $liste_mat_dpxx"
+		else if ($arg == "gpxx") then
+		    set liste_mat = "$liste_mat $liste_mat_gpxx"
+		else
+		    set liste_mat = "$liste_mat $arg"
+		endif
+
+		if ($arg == "sources") then
+		    set G_bTraiterJrp = true
+		    set G_bjrpmat = false
+				## 30/01/2014 Mantis 4380
+				set bsources = true
+		endif
+	
+		## 26/04/2013 MB : ajout option pour traiter Bofip sans les autres sources
+		if ($arg == "bofip") then
+		    set G_bTraiterBofipSeul = true
+		endif
+
+		## 27/05/2013 MB/AL : ajout option pour traiter les codes sans les autres sources
+		if ($arg == "codes") then
+		    set G_bTraiterCodesSeul = true
+		endif
+
+		## 27/05/2013 MB/AL : ajout option txt pour traiter les txt sans les autres sources
+		if ($arg == "txt") then
+		    set G_bTraiterTxtSeul = true
+		endif
+
+	    endif
+
+	    if ("$option" == "-etape") set etape = "$etape $arg"
+
+	    if ("$option" == "-d") then
+		## si on donne un chemin relatif alors on calcule le chemin absolu
+		## cela facilitera l'utilisation des commandes systeme pushd + popd
+
+		## exemples :
+		## si -d ../../dossier/ => chemin absolu = $PWD/../../dossier
+		## si -d /mac.public/alazreg/hulk/sgm/ => chemin absolu = /mac.public/alazreg/hulk/sgm/
+		if (-d $PWD/$arg) then
+		    set ela_liv_sgm = $PWD/$arg
+		else
+		    set ela_liv_sgm = $arg
+		endif
+	    endif
+		## YE 30/01/2014 Mantis 4380
+		if ("$option" == "-jrpdepuis") then
+			set referenceDateJrp = "$arg"
+			echo "$referenceDateJrp" | egrep '[0-9][0-9]/[0-9][0-9]/[0-9][0-9][0-9][0-9]'
+			if ($status != 0)  then
+				echo "ERROR Format: jrpdepuis -> Date = jj/mm/aaaa"
+				goto endcommand
+			endif
+			set breferancedateJrp = true
+	    endif
+		
+		# "-txtdepuis"
+		## YE 14/02/2014 Mantis 4380
+		if ("$option" == "-txtdepuis") then
+			set referenceDateTxt = "$arg"
+			echo "$referenceDateTxt" | egrep '[0-9][0-9]/[0-9][0-9]/[0-9][0-9][0-9][0-9]'
+			if ($status != 0)  then
+				echo "ERROR Format: txtdepuis -> Date = jj/mm/aaaa"
+				goto endcommand
+			endif
+			set breferancedateTxt = true
+	    endif
+
+		if ("$option" == "datemaj") then			
+			set datemaj = "$arg"			
+			echo "$datemaj" | egrep '[0-9][0-9][0-9][0-9]/[0-9][0-9]'
+			if ($status != 0)  then
+				echo "ERROR Format: datemaj -> Date = aaaa/mm"
+				goto endcommand
+			endif
+			set bdatemaj = true 
+		endif 
+
+	breaksw
+    endsw   
+end
+
+echo debug 1
+
+set dirmiscdata = $ELA_LIV/miscdata
+
+## ---------------------------------------------------------------------
+## fin handle_cmd_line
+## ---------------------------------------------------------------------
+
+if ($smode != "prod" && $smode != "test" && $smode != "sandbox1" && $smode != "sandbox4") then
+    echo "vous devez donner un argument -prod -test -sandbox1 -sandbox4"
+    echo "abandon du script $0"
+    goto endcommand
+endif
+
+## ------------------------------------------------------------------------
+## 09/12/2013 alazreg
+## appeler le programme emptytags.bal pour mettre a jour le fichier $ELA_LIV/dtd/emptytags.bsh pour jouve
+## ------------------------------------------------------------------------
+balise -src $ELA_SRC_GEN/emptytags.bal
+
+## ------------------------------------------------------------------------
+## 05/07/2013 alazreg
+## poser un verrou pour empecher plusieurs personnes de lancer en meme temps
+## Ne pas utiliser elslock car on ne veut pas declencher un traitement tout de suite
+## On attend que le traitement en cours se termine chez jouve
+##
+## Reste a ameliorer :
+## On attend au moins que l'étape Récupération du fonds soit terminéé chez jouve pour démarrer
+## ------------------------------------------------------------------------
+##elslock hulkliv_$smode hulklivtest
+set lockpath = $ELA_TMP_IDX/hulkliv_$smode.lock
+
+# ------------------------------------------------------------------------
+# 23/12/2015 alazreg
+# si un verrou existe deja
+# au lieu de quitter le programme on se met en attente de liberation du verrou
+# ------------------------------------------------------------------------
+set b_jai_pose_le_verrou = false
+set b_afficher_msg_attente = true
+while (-f $lockpath)
+	if ($b_afficher_msg_attente == true) then
+		echo '# ------------------------- ATTENTE VERROU -------------------------'
+		ll $lockpath
+		cat $lockpath
+		echo '# -----------------------------------------------------------'
+		set b_afficher_msg_attente = false
+	endif
+	sleep 60
+end
+
+# il ne faut pas oublier de creer le fichier
+touch $lockpath
+set b_jai_pose_le_verrou = true
+
+# si le fichier lock existe cela signifie que quelqu'un a lance le script
+# on attend notre tour
+# if (-f $lockpath) then
+    # $sendmailcmd "$destinataires" -s "$0 ABANDON" -f $lockpath
+    # echo ""
+    # echo "================== ERREUR : ABANDON de $0 =================="
+    # echo ""
+    # cat $lockpath
+    # exit 1
+# else
+    # si le fichier lock n'existe pas cela signifie que la voie est libre
+    # on prend la main en posant un verrou
+    # lorsqu'on aura fini => voir rm $lockpath a la fin de ce script
+
+    # touch $lockpath
+    # on ecrit un message pour les copains qui viendront apres
+    # echo "Un verrou hulkliv_$smode est posé par $user depuis le "`date +'%d/%m/%Y %T'` >! $lockpath
+    # echo "" >> $lockpath
+    # echo "Adresse du verrou : $lockpath" >> $lockpath
+    # echo "" >> $lockpath
+    # echo "Si vous trouvez que cette date est suspecte, contactez $user ou le pole technique" >> $lockpath
+# endif
+
+
+
+echo "smode = $smode"
+##echo "liste_mat_toutes = $liste_mat_toutes"
+echo "liste_mat = '"$liste_mat"'"
+
+## ------------------------------------------------------------------------
+## 09/10/2012 AL
+## Prevoir ici de sauvegarder les anciens logs
+## + supprimer les log de plus de 10 jours
+## ------------------------------------------------------------------------
+set logfile = $ELA_TRACE/hulk_liv_$smode.$dateprod.log.txt
+\rm -f $logfile >& /dev/null
+touch $logfile
+
+echo "logfile : $logfile"
+sleep 2
+
+
+$sendmailcmd $destinataires -s $sujet -c "Attendre un mail de fin des traitements. Vous pouvez aussi consulter le fichier de log "$logfile" en cours de création"
+
+echo "Attendre un mail de fin des traitements. Vous pouvez aussi consulter le fichier de log "$logfile" en cours de création" | mutt -s "mail auto  HULK : debut traitements EL TEST" -- l.tranchefeux@lefebvre-sarrut.eu
+
+
+echo `date +'%Y-%m-%d - %T'`" debut de la commande $0 $*" >> $logfile
+
+
+echo "#argv = $#argv"
+echo "#argv = $#argv" >> $logfile
+
+
+## trier la liste des matieres par ordre croissant
+## 26/04/2013 MB : renommer dp08 si introduit par erreur
+set liste_mat_triee = `echo $liste_mat | sed 's/^ //g' | sed 's/dp08/dp36/g' | sed 's/gb/gp/g' | sed 's/ /\n/g' | sort -u`
+##echo "liste_mat       = $liste_mat"
+echo "liste_mat_triee = '"$liste_mat_triee"'"
+
+set liste_mat = "$liste_mat_triee"
+##echo "liste_mat       = $liste_mat"
+
+
+
+## -------------------------------------------------------------------------
+## Si le dossier sgml n'est pas précisé en ligne de commande alors on prend le dossier $ELA_LIV/sgm
+## -------------------------------------------------------------------------
+if ($ela_liv_sgm == "") set ela_liv_sgm = $ELA_LIV/sgm
+
+## -------------------------------------------------------------------------
+## 06/03/2013 alazreg
+## bug resolu
+## il est important d'attendre la redéfinition de ELA_LIV à l'étape handle dessus
+## avant d'exploiter cette variable
+## -------------------------------------------------------------------------
+set ela_liv = $ELA_LIV
+##set ela_liv_sgm = $ELA_LIV/sgm
+set ela_liv_sgm_entites_nums = $ELA_LIV/sgm_entites_nums
+
+#---------------------------------------------------------------------------
+# 09/02/2017 Mise a jour de la map des renvois GB
+majMapRenvoisGB prod
+set retour = $status
+if ($retour != 0) then
+	echo "ERREUR lors de La mise a jour de la map des renvois GB"
+	goto abortcommand
+	exit $retour
+endif
+#---------------------------------------------------------------------------
+
+## -------------------------------------------------------------------------
+## 12/02/2013 AL
+## Le programme hulk.bal est appelé plusieurs fois dans ce script
+## Je cree ici une variable qui contient l'appel au programme balise hulk.bal
+## Cela permet de modifier facilement par une version de test hulk_test.bal
+## -------------------------------------------------------------------------
+set balise_src_hulk_bal = "balise -src $ELA_SRC_GEN/hulk.bal"
+
+## -------------------------------------------------------------------------
+## 11/03/2013 alazreg
+## il faut pouvoir realiser des tests sans perturber la prod
+## pour cela je crée des versions de hulk.bal
+## qui sont appelées en mode test ou sandbox
+## pour le détail voir les commentaires dans les versions
+## -------------------------------------------------------------------------
+if ($smode == "test" || $smode == "sandbox1" || $smode == "sandbox4") then
+    set balise_src_hulk_bal = "balise -src $ELA_SRC_GEN/hulk_test.bal"
+endif
+
+
+
+calcul_zids:
+
+## generer la liste des id pour le cdcoll update
+##set liste_mat_zids = "ELNET"
+set liste_mat_zids = ""
+
+## penser a utiliser la commande getDicoID dp02
+### (utilise dans les scripts de la chaine)...
+## a remplacer par getDicoID dp02 ==> z2
+
+ 
+if ("$liste_mat" != "") then
+    foreach id ($liste_mat)
+	set dizaine = `echo $id | cut -c3`
+	set unite = `echo $id | cut -c4`
+	set zid = "inconnu"
+	
+	
+	if ($dizaine == "0") set zid = "z"
+	if ($dizaine == "1") set zid = "y"
+	if ($dizaine == "2") set zid = "x"
+	if ($dizaine == "3") set zid = "w"
+	if ($dizaine == "4") set zid = "v"
+	if ($dizaine == "5") set zid = "u"
+	if ($dizaine == "6") set zid = "t"
+	if ($dizaine == "7") set zid = "s"
+	
+	##set nid = $dizaine$unite
+	set nid = $zid$unite
+	
+	
+	if ($id == "sources") set nid = "elnet"
+	## 26/04/2013 MB : ajout option bofip
+	if ($id == "bofip") set nid = "bofip"
+	## 27/05/2013 MB/AL : ajout option codes
+	if ($id == "codes") set nid = "codes"
+	## 27/05/2013 MB/AL : ajout option txt
+	if ($id == "txt") set nid = "txt"
+	## 25/06/2013 AL : ajout option jrp
+	if ($id == "jrp") set nid = "jrp"
+
+	if ($id == "elnet") set nid = "elnet"
+	
+	set liste_mat_zids = "$liste_mat_zids $nid"
+    end
+endif
+
+set liste_mat_zids_uppercase = `echo $liste_mat_zids | tr "a-z" "A-Z"`
+
+echo ""
+echo "smode = $smode"
+echo "ela_liv_sgm = $ela_liv_sgm"
+echo "liste_mat = '"$liste_mat"'"
+echo "liste_mat_zids = '"$liste_mat_zids"'"
+echo "liste_mat_zids_uppercase = $liste_mat_zids_uppercase"
+echo "bstop = $bstop"
+echo "etape = $etape"
+echo ""
+
+
+set ela_liv_uc = $ELA_LIV/uc
+set ela_liv_urf = $ELA_LIV/urf
+set ela_liv_mfi = $ELA_LIV/mfi
+set ela_liv_exalead_xml = $ELA_LIV/exalead/xml
+
+echo ""
+echo "ELA_LIV = $ELA_LIV"
+echo "FSHTMLPHULK = $FSHTMLPHULK"
+echo "ela_liv_sgm = $ela_liv_sgm"
+echo "ela_liv_uc = $ela_liv_uc"
+echo "ela_liv_mfi = $ela_liv_mfi"
+echo "ela_liv_exalead_xml = $ela_liv_exalead_xml"
+echo ""
+##echo "debug je quitte ici"
+##goto endcommand
+##exit 1
+
+
+# set dir_non_valides = $ELA_LIV/SVG_FICHIERS_SGM_XML
+# set dir_non_valides = $ELA_LIV/backup/backup_`date +'%Y%m%d-%H%M%S'`
+set dir_non_valides = $ELA_LIV/non_valides
+mkdir -p $dir_non_valides >& /dev/null
+
+##exit 0
+
+## Booleen qui permet indique la presence dans les dossiers de fichiers autres que .sgm .xml
+set bProblemeExtension = false
+set bProblemeValidation = false
+set bProblemeValidationPatchSgml = false
+
+if ("$etape" != "") then
+    goto $etape
+endif
+
+## ---------------------------------------------------------------
+## 08/02/2013 al/ytr
+## suppresion des fichiers sgm pour ne garder que les matiere à mettre à jour
+## cela fera gagner du temps d etraitement aux EL + JOUVE
+## ---------------------------------------------------------------
+##supprimer_dossier_sgm:
+##if ($etape == "" || $etape == "supprimer_dossier_sgm" ) then
+##    \rm -rf $ELA_LIV/sgm/*
+##    \rm -rf $ELA_LIV/sgm_entites_nums/*
+##endif
+
+purge_ela_liv:
+if ($bpurge == true) then
+    pushd $ELA_LIV
+	set ela_liv_archive_lastfullmaj = $ELA_LIV/archive/lastfullmaj
+	mkdir -p $ela_liv_archive_lastfullmaj >& /dev/null
+##	mkdir -p $ELA_LIV/backup
+	foreach d (sgm sgm_entites_nums uc mfi urf exalead/xml)
+	    ##mkdir -p $ela_liv_archive_lastfullmaj/$d >& /dev/null
+			# \cp -r $d/* $ela_liv_archive_lastfullmaj/$d $ELA_LIV/backup
+			# \rm -rf `find $d -type f`
+	    echo " nettoyage : $d/*.*"
+	    \rm -f $d/*.* >& /dev/null
+	end
+    popd
+endif
+if ($bstop == true) goto endcommand
+
+## ------------------------------------------------------------
+## 28/02/2013 alazreg
+## ajout etape de copie des schemas xsd
+## ------------------------------------------------------------
+copiexsd:
+##\cp $ELA_DTD/../xsd/v1.0/*.* $ELA_LIV/dtd/xml_schema/
+##\cp $ELA_DTD/../xsd/v1.1/*.* $ELA_LIV/dtd/xml_schema/
+##\cp $ELA_DTD/../xsd/v1.3/*.* $ELA_LIV/dtd/xml_schema/
+# \cp $ELA_DTD/../xsd/v1.4/*.* $ELA_LIV/dtd/xml_schema/
+# \cp $ELA_DTD/../xsd/v1.6/*.* $ELA_LIV/dtd/xml_schema/
+\cp $ELA_DTD/../xsd/v1.7/*.* $ELA_LIV/dtd/xml_schema/
+
+## ------------------------------------------------------------
+## 28/02/2013 alazreg
+## pour docs el dans dalloz
+## modifier les titres des debua
+## etudes = titre de l'étude
+## formule = titre de la formule
+## ------------------------------------------------------------
+#alazreg@dpmprod : sed 's/ T="[^"]*"/ T="Cong\&#233;s et absences diverses"/g' z2001.body.sgm > ! z2001.body.sgm.out
+
+
+
+################################################
+## 28/03/2013 alazreg
+## ajout d'une etape alimhulk.pl automatique
+## cela permet d'avoir toujours les dernieres donnees validees sur prod test sandbox1
+## penser à désactiver appel alimhulk.pl dans elsliv elsvalide
+################################################
+## 29/03/2013 alazreg
+## poser les verrous elsvalide_dpxx + elsliv_dpxx 
+## pour empecher les collision avec les deux commande elsliv et elsvalide
+################################################
+## 21/06/2013 alazreg
+## parfois nous avons besoin de tester juste quelques fichiers sans relancer toute une matiere
+## ajout du test if ($liste_mat != "") pour que le script ne plante pas si la liste des matieres est vide
+################################################
+alimhulk:
+if ("$liste_mat" != "" && $balimhulk == true) then
+    foreach dp ($liste_mat)
+	## 25/07/2013 al/mb : si option jrp on passe car traitt a part
+	if ("$dp" == "jrp") continue 
+	elslock elsvalide_$dp hulkliv
+	elslock elsliv_$dp hulkliv
+	## test alimentation Bofip sans les autres sources
+	echo "******************* Appel : /usr/local/ela/bin/alimhulk.pl $dp $smode "
+	/usr/local/ela/bin/alimhulk.pl $dp $smode
+
+	elsunlock elsvalide_$dp hulkliv
+	elsunlock elsliv_$dp hulkliv
+    end
+
+    
+    ##sleep 2
+    ##echo "******** ========= *********** Apres appel /usr/local/ela/bin/alimhulk.pl $dp $smode "
+
+    ##  26/04/2013 MB : on ajoute la copie des sources si option bofip 
+	##                  car les bofip sont toujuors livres dans le dossier sources
+    ##                  le moyen le +simple est de positionner le dp a sources
+    
+    ##echo " ********** avant liste_dp_a_copier = $liste_dp_a_copier\n";
+    ##echo " ********** apres liste_dp_a_copier = $liste_dp_a_copier\n";
+    ## 25/07/2013 al/mb : on commente on sait pas a quoi ça sert
+    #if ( "$dp" == "bofip" || "$dp" == "codes" || "$dp" == "txt" ) then
+	#set dp = "sources"
+    #endif
+    
+    ##echo " ********** avant alimentation du dossier : $ELA_LIV/sgm ********* DP = $dp liste_dp_a_copier = $liste_dp_a_copier\n";
+    ##sleep 5
+    
+endif
+
+if ($bstop == true) goto endcommand
+ 
+## j'ai deplace ce bloc (il etait dans l'etape : copiesgml:
+## pour modifier bofip en sources dans la liste des dpxx a traiter
+## 11/02/2013 AL
+## la litse des matiere est donnee maintenant en ligne de commande apres l'argument -mat
+## exemple : hulkliv prod -mat dp02 gp67
+set liste_dp_a_copier = ""
+set liste_dp_a_copier = "$liste_mat"
+set liste_dp_a_copier = `echo $liste_dp_a_copier | sed -e 's/bofip/sources/g' | sed -e 's/codes/sources/g' | sed -e 's/txt/sources/g' `
+
+
+################################################
+## 03/04/2013 alazreg
+## recuperer les dtd canonisees
+################################################
+
+copiedtd:
+# canondtd:
+echo "elscdweb_dtd.csh elnet $ELA_LIV"
+elscdweb_dtd.csh elnet $ELA_LIV
+
+# 18/04/2018 https://jira.els-gestion.eu/browse/SIECDP-598 : maj de papidoc.dtd
+\cp $ELA_DTD/papidoc.dtd $ELA_LIV/dtd
+
+if ($bstop == true) goto endcommand
+
+# YE LE 14/02/2014  Mantis 4380
+# Etape txttobuild, createbloctxt
+# YE 12/05/2014
+#Pas de makebloc txt ni jrp  si traitement avec addfiles 
+if ($dirAddFiles != "") then 
+	goto copiesgml
+endif
+
+####################################################################
+# 18/09/2014 sfouzi
+# ajout option addtxtfiles addjrpfiles pour traiter des textes unitaires
+####################################################################
+if ($dirAddTxtFiles != "") then
+	goto addtxtfiles
+endif
+
+if ($dirAddJrpFiles != "") then
+	goto addjrpfiles
+endif
+
+makebloctxt:
+txttobuild:
+echo `date +'%Y-%m-%d - %T'`"Debut de l Etape makebloctxt ........"
+	echo `date +'%Y-%m-%d - %T'`"Debut de l Etape makebloctxt ........" >> $logfile
+echo `date +'%Y-%m-%d - %T'`"Supprimer les txtbloc du dossier $ELA_LIV/txtblochulk ......"
+	echo `date +'%Y-%m-%d - %T'`"Supprimer les txtbloc du dossier $ELA_LIV/txtblochulk ......">> $logfile
+	
+	mkdir -p $ELA_LIV/txtblochulk >& /dev/null
+	
+	pushd $ELA_LIV/txtblochulk
+		\rm -f *.sgm >& /dev/null
+
+		if ($smode == "prod") then
+				if ($breferancedateTxt == true) then 
+					balise -src $ELA_SRC_GEN/makeblocs_v2.bal -args txtblochulk -txtdepuis $referenceDateTxt
+				else 	
+					balise -src $ELA_SRC_GEN/makeblocs_v2.bal -args txtblochulk
+				endif	
+		else
+				if ($breferancedateTxt == true) then 
+					balise -src $ELA_SRC_GEN/test/makeblocs_v2.bal -args txtblochulk -txtdepuis $referenceDateTxt
+				else 	
+					balise -src $ELA_SRC_GEN/test/makeblocs_v2.bal -args txtblochulk
+				endif	
+		endif
+		# YE 26/05/2014 Mantis 7336
+		# copie des textant dans le dossier $ELA_LIV/txtantblochulk
+		# purger le dossier txtantblochulk
+		mkdir -p $ELA_LIV/txtantblochulk >& /dev/null
+		
+		\rm -f $ELA_LIV/txtantblochulk/*.sgm >& /dev/null
+		
+		ls $PWD/elnet_txtantbloc_*.optj.sgm >& /dev/null
+		if ($status == 0) then 		
+			foreach f ($PWD/elnet_txtantbloc_*.optj.sgm) 
+				\mv $f $ELA_LIV/txtantblochulk
+			end
+		endif
+			
+		# ye/al 11/03/2014 generer les toc des txt
+		\rm -f $PWD/toc/* >& /dev/null	
+		create-toc txt $ELA_LIV/txtblochulk/
+
+		balise49 -src $ELA_SRC_GEN/insere_UA_UR_test.bal -args -dtd $ELA_DTD/txtbloc-optj.dtd -dirin $PWD
+
+		balise49 -src $ELA_SRC_GEN/insere_UA_UR_test.bal -args -dtd $ELA_DTD/toc.dtd -dirin $PWD/toc
+		\mv $PWD/toc/*.sgm.out $PWD
+		renamefiles .sgm.out .sgm >& /dev/null
+	popd
+	echo `date +'%Y-%m-%d - %T'`"Fin de l Etape makebloctxt ........"
+	echo `date +'%Y-%m-%d - %T'`"Fin de l Etape makebloctxt ........" >> $logfile
+
+	# YE Le 26/05/2014 Mantis 7336
+	# Traitement des blocs ant
+	mkdir -p $ELA_LIV/txtantblochulk >& /dev/null
+	pushd $ELA_LIV/txtantblochulk 
+
+		\rm -f $PWD/toc/* >& /dev/null	
+		create-toc txt $ELA_LIV/txtantblochulk/
+
+		balise49 -src $ELA_SRC_GEN/insere_UA_UR_test.bal -args -dtd $ELA_DTD/txtbloc-optj.dtd -dirin $PWD -ant
+
+		balise49 -src $ELA_SRC_GEN/insere_UA_UR_test.bal -args -dtd $ELA_DTD/toc.dtd -dirin $PWD/toc
+		\mv $PWD/toc/*.sgm.out $PWD
+		renamefiles .sgm.out .sgm >& /dev/null
+	popd
+
+echo `date +'%Y-%m-%d - %T'`"Fin de l'etape makebloc TXT"
+echo `date +'%Y-%m-%d - %T'`"Fin de l'etape makebloc TXT" >> $logfile
+makeblocjrp:
+jrptobuild:
+
+echo `date +'%Y-%m-%d - %T'`"Debut de l Etape makeblocjrp ........"
+echo `date +'%Y-%m-%d - %T'`"Debut de l Etape makeblocjrp ........" >> $logfile
+echo `date +'%Y-%m-%d - %T'`"Supprimer les jrp du dossier $ELA_LIV/jrphulkbloc ......"
+echo `date +'%Y-%m-%d - %T'`"Supprimer les jrp du dossier $ELA_LIV/jrphulkbloc ......">> $logfile
+
+if ($G_bTraiterJrp == true) then
+## ------------------------------------------------------------------------
+	mkdir -p $ELA_LIV/jrpblochulk >& /dev/null
+    \rm -rf $ELA_LIV/jrpblochulk/*
+    set optionjrp = "jrpblochulk"
+  
+	if ($smode == "prod") then
+		if ($breferancedateJrp == true) then 
+			balise -src $ELA_SRC_GEN/makeblocs_v2.bal -args $optionjrp -jrpdepuis $referenceDateJrp
+		else 	
+			balise -src $ELA_SRC_GEN/makeblocs_v2.bal -args $optionjrp
+		endif				
+	else
+		if ($breferancedateJrp == true) then 
+			balise -src $ELA_SRC_GEN/test/makeblocs_v2.bal -args $optionjrp -jrpdepuis $referenceDateJrp
+		else 	
+			balise -src $ELA_SRC_GEN/test/makeblocs_v2.bal -args $optionjrp
+		endif	
+	endif
+		
+    echo "Generation des jrpblocs $optionjrp" >> $logfile
+    echo `date +'%Y-%m-%d - %T'`" Traitement des blocs jrp EL dans : $ELA_LIV/jrpblochulk/" >> $logfile
+    
+    ##------------------------------------------------------------------------------------------------------------------------
+    ## ce bloc tombe en erreur s'il n ya pas de blocs jrp de faits (ex. : qu'on on traite un fichier qui n'en pointe pas))  
+    ## ==> prevoir de passer a l'etape suivante directement dans ce cas
+    ls $ELA_LIV/jrpblochulk/elnet_jrpbloc*optj.sgm >& /dev/null
+    if ($status != 0) then
+        echo "Aucun bloc jrp a traiter dans : $ELA_LIV/jrpblochulk"
+		echo "Aucun bloc jrp a traiter dans : $ELA_LIV/jrpblochulk" >> $logfile
+		echo " on passe directement a l etape optj2exalead"
+		echo " on passe directement a l etape optj2exalead" >> $logfile
+		goto copiesgml
+    endif
+    create-toc jrp $ELA_LIV/jrpblochulk/   
+
+	balise49 -src $ELA_SRC_GEN/insere_UA_UR.bal -args -dtd $ELA_DTD/decisbloc-optj.dtd -dirin $ELA_LIV/jrpblochulk -dirout $ELA_LIV/jrpblochulk/uaur
+	balise49 -src $ELA_SRC_GEN/insere_UA_UR.bal -args -dtd $ELA_DTD/toc.dtd -dirin $ELA_LIV/jrpblochulk/toc -dirout $ELA_LIV/jrpblochulk/toc/uaur
+
+	foreach f ($ELA_LIV/jrpblochulk/uaur/*.optj.sgm)
+		/usr/local/ela/bin/remetFicSurUneLigne $f
+	end
+
+	pushd $ELA_LIV/jrpblochulk/uaur
+		/usr/local/ela/bin/renamefiles .sgm.tmp .sgm
+	popd
+endif
+
+
+####################################################################
+# 18/09/2014 sfouzi
+# ajout option addtxtfiles pour traiter des textes unitaires
+####################################################################
+addtxtfiles:
+echo `date +'%Y-%m-%d - %T'`"Debut de l Etape makebloctxt ........" >> $logfile
+echo `date +'%Y-%m-%d - %T'`"Supprimer les txtbloc du dossier $ELA_LIV/addtxtfiles ......">> $logfile
+
+mkdir -p $ELA_LIV/addtxtfiles >& /dev/null
+
+pushd $ELA_LIV/addtxtfiles
+	\rm -f *.sgm >& /dev/null
+
+	# Generer les txtblocs
+	if ($smode == "prod") then
+		# A activer lors du passage en prod
+		# balise -src $ELA_SRC_GEN/makeblocs_v2.bal -args addtxtfiles -dirin $referenceDateTxt
+		balise -src $ELA_SRC_GEN/makeblocs_v2.bal -args addtxtfiles -dirin $dirAddTxtFiles
+	else
+		balise -src $ELA_SRC_GEN/test/makeblocs_v2.bal -args addtxtfiles -dirin $dirAddTxtFiles
+	endif
+
+	# Generer les toc des txtblocs
+	\rm -f $PWD/toc/* >& /dev/null
+	create-toc txt $ELA_LIV/addtxtfiles/
+
+	# Inserer les UA UR des optj
+	balise49 -src $ELA_SRC_GEN/insere_UA_UR_test.bal -args -dtd $ELA_DTD/txtbloc-optj.dtd -dirin $PWD
+
+	# Inserer les UA UR des toc 
+	balise49 -src $ELA_SRC_GEN/insere_UA_UR_test.bal -args -dtd $ELA_DTD/toc.dtd -dirin $PWD/toc
+
+	\mv $PWD/toc/*.sgm.out $PWD
+	renamefiles .sgm.out .sgm >& /dev/null
+popd
+
+echo `date +'%Y-%m-%d - %T'`"Fin de l Etape makebloctxt ........"
+echo `date +'%Y-%m-%d - %T'`"Fin de l Etape makebloctxt ........" >> $logfile
+
+# --------------------------------------------------------------------------
+# 19/05/2016 alazreg ajout argument addjrpfiles sur modele de addtxtfiles
+# --------------------------------------------------------------------------
+addjrpfiles:
+echo `date +'%Y-%m-%d - %T'`"Debut de l Etape makeblocjrp ........" >> $logfile
+echo `date +'%Y-%m-%d - %T'`"Supprimer les jrpbloc du dossier $ELA_LIV/addjrpfiles ......">> $logfile
+
+mkdir -p $ELA_LIV/addjrpfiles >& /dev/null
+pushd $ELA_LIV/addjrpfiles
+	\rm -f *.sgm >& /dev/null
+
+	# Generer les jrpblocs
+	if ($smode == "prod") then
+		# A activer lors du passage en prod
+		# balise -src $ELA_SRC_GEN/makeblocs_v2.bal -args addjrpfiles -dirin $referenceDateTxt
+		balise -src $ELA_SRC_GEN/makeblocs_v2.bal -args addjrpfiles -dirin $dirAddJrpFiles
+	else
+		balise -src $ELA_SRC_GEN/test/makeblocs_v2.bal -args addjrpfiles -dirin $dirAddJrpFiles
+	endif
+
+	# Generer les toc des txtblocs
+	\rm -f $PWD/toc/* >& /dev/null
+	create-toc jrp $ELA_LIV/addjrpfiles/
+
+	# Inserer les UA UR des optj
+	balise49 -src $ELA_SRC_GEN/insere_UA_UR_test.bal -args -dtd $ELA_DTD/decisbloc-optj.dtd -dirin $PWD
+
+	# Inserer les UA UR des toc 
+	balise49 -src $ELA_SRC_GEN/insere_UA_UR_test.bal -args -dtd $ELA_DTD/toc.dtd -dirin $PWD/toc
+
+	\mv $PWD/toc/*.sgm.out $PWD
+	renamefiles .sgm.out .sgm >& /dev/null
+popd
+
+echo `date +'%Y-%m-%d - %T'`"Fin de l Etape makeblocjrp ........" >> $logfile
+
+# echo 
+# echo debug alazreg exit
+# exit 1
+
+
+##copieSgmElnetVersHulkSgm:
+copiesgml:
+
+if ("$liste_dp_a_copier" != "") then
+
+## a faire seulement si script lancé entièrement ou étape copieSgmElnet spécifiée
+    echo "debug je suis a l'etape copiesgml"
+
+
+    echo "smode = $smode"
+    ##exit 0
+
+	foreach dp ($liste_dp_a_copier)
+	    ## 25/07/2013 al/mb : si option jrp on passe car traitt a part
+	    if ("$dp" == "jrp") continue 
+
+	    ################################################
+	    ## renommer le fichier redaction.htm en dpxx_redaction.htm
+	    ################################################
+	    if (-f $ELA_LIV/alimhulk/$dp/www/html/redaction.htm) then
+		pushd $ELA_LIV/alimhulk/$dp/www/html
+		    \mv redaction.htm ${dp}_redaction.htm
+		popd
+	    endif
+
+	    ## -------------------------------------------
+	    ## 26/02/2013 AL
+	    ## pour mettre a jour les links inter gb il faut toutes les matieres appelees dans le meme dossier liv/sgm
+	    ## -------------------------------------------
+##	    if ($smode == "test") then
+##		/usr/local/ela/bin/alimhulk.pl $dp $smode
+##	    endif
+
+
+	    echo "debug je copie $ELA_LIV/alimhulk/$dp"
+	    
+
+	    ## 12/02/2013 AL
+	    ## Le lien suivant pose probleme lors de la copie cp -r
+	    ## www/html/HELP -> ../../../../HELP/HELP_standard
+	    ## je le supprime pour régler le probleme de copie
+	    \rm -rf $ELA_LIV/www/html/HELP
+		
+		# 25/02/2016 SF Ajout des niveaux d'imbrication aux listes des formulaires
+		foreach dp_form ($list_dp_form)
+			if ($dp == $dp_form) then
+				echo `date +'%Y-%m-%d - %T'`" $dp : Ajout des niveaux d'imbrication a la liste des formulaires..."
+				echo `date +'%Y-%m-%d - %T'`" $dp : Ajout des niveaux d'imbrication a la liste des formulaires...">> $logfile
+				pushd $ELA_LIV/alimhulk/$dp/sgm >& /dev/null
+					rm -rf lstform >& /dev/null
+					mkdir -p lstform >& /dev/null
+					pushd lstform >& /dev/null
+						balise -src $ELA_SRC_GEN/hulk_creerliste_form.bal -args -dirdtd $ELA_DTD -mat $dp -dirout $PWD
+						balise49 -src $ELA_SRC_GEN/insere_UA_UR.bal -args -dtd $ELA_DTD/listels.dtd -dirin $PWD -dirout $PWD/uaur					
+						\mv $PWD/uaur/*.sgm ..
+						rm -rf $PWD/uaur >& /dev/null
+					popd >& /dev/null
+				popd >& /dev/null
+			endif
+		end
+
+	    ## -------------------------------------------
+	    echo `date +'%Y-%m-%d - %T'`" Debut copie des fichiers depuis $ELA_LIV/alimhulk/$dp/prodmaps vers $ELA_LIV/miscdata" >> $logfile
+##	    foreach f (`ls $ELA_LIV/alimhulk/$dp/prodmaps/*`)
+##		\cp -r $f $ELA_LIV/miscdata
+##	    end
+	    
+	    ## 26/04/2013 mb : si option bofip, ne pas traiter les codes
+	    # if ($dp == "sources" && -d $ELA_LIV/alimhulk/$dp/prodmaps/pmaps) then
+
+	    if ($dp == "sources" && G_bTraiterBofipSeul == false && -d $ELA_LIV/alimhulk/$dp/prodmaps/pmaps) then
+		\cp -r $ELA_LIV/alimhulk/$dp/prodmaps/pmaps/ $ELA_LIV/miscdata/
+	    endif
+	    
+
+	    \cp -r $ELA_LIV/alimhulk/$dp/prodmaps/*.* $ELA_LIV/miscdata
+
+	    echo `date +'%Y-%m-%d - %T'`" Fin copie des fichiers depuis $ELA_LIV/alimhulk/$dp/prodmaps vers $ELA_LIV/miscdata" >> $logfile
+
+
+	    #----------------------------------------------------------------------------
+	    ## 08/04/2013 alazreg
+	    ## reprise patch de elnet_trtSpec
+	    #----------------------------------------------------------------------------
+	    ## 04/12/2012 al
+	    ## préfixer les jrp du comjrp pour résoudre un conflit avec les jrp sources
+	    ## exemple : A12345 devient COMJRPA12345
+	    if ($dp == "dp15") then
+	    pushd $ELA_LIV/alimhulk/dp15/sgm
+		cat dp15_comjrp.optj.sgm | sed -e 's/IDREF="\(A[0-9]\)/IDREF="COMJRP\1/g' | sed -e 's/ID="\(A[0-9]\)/ID="COMJRP\1/g' >! dp15_comjrp.optj.sgm.out
+		cat dp15_comjrp.toc.sgm | sed -e 's/REFID="\(A[0-9]\)/REFID="COMJRP\1/g' >! dp15_comjrp.toc.sgm.out
+		\mv dp15_comjrp.optj.sgm.out dp15_comjrp.optj.sgm
+		\mv dp15_comjrp.toc.sgm.out dp15_comjrp.toc.sgm
+	    popd
+	    endif
+	    
+	    ## -------------------------------------------
+	    ## 12/02/2013 AL
+	    ## ici je renomme les fichiers ccol par matiere sinon ils sont ecrases dans $ELA_LIV/sgm
+##	    echo `date +'%Y-%m-%d - %T'`" Debut renommage des fichiers ccol dans $ELA_LIV/alimhulk/$dp/sgm" >> $logfile
+	    ## 26/04/2013 MB : ajout option bofip
+	    if ($dp != "dp15" && $dp != "lp35" && $dp != "sources"  && $dp != "bofip") then
+##		echo "pushd $ELA_LIV/alimhulk/$dp/sgm"
+		pushd $ELA_LIV/alimhulk/$dp/sgm
+##		    echo "recherche de fichiers cc oc a renommer"
+		    ls cc[0-9]*.sgm oc[0-9]*.sgm >& /dev/null
+		    if ($status == 0) then
+			foreach f (`ls cc[0-9]*.sgm oc[0-9]*.sgm`)
+			    \mv $f ${dp}_$f
+			end
+		    else
+##			echo "aucun fichiers cc oc a renommer"
+		    endif
+		popd
+	    endif
+##	    echo `date +'%Y-%m-%d - %T'`" Fin renommage des fichiers ccol dans $ELA_LIV/alimhulk/$dp/sgm" >> $logfile
+
+	    echo `date +'%Y-%m-%d - %T'`" Debut copie des fichiers depuis $ELA_LIV/alimhulk/$dp/sgm vers $ela_liv_sgm" >> $logfile
+	    echo `date +'%Y-%m-%d - %T'`" Debut copie des fichiers depuis $ELA_LIV/alimhulk/$dp/sgm vers $ela_liv_sgm" 
+	    
+		
+		# YE 4380 ne pas prendre les txtblocs
+		# Le 14/02/2014
+		# foreach f (`ls $ELA_LIV/alimhulk/$dp/sgm/*.sgm`)
+				#echo " ***** ----- ***** ----- $f =====> $ela_liv_sgm"			
+				# \cp $f $ela_liv_sgm			
+		# end		
+		if $dp == "sources" then				
+			foreach f (`ls $ELA_LIV/alimhulk/$dp/sgm/*.sgm | grep -iv 'elnet_txtbloc'| grep -iv 'elnet_txtantbloc_'`) 
+				\cp $f $ela_liv_sgm	
+			end
+		else			
+	    foreach f (`ls $ELA_LIV/alimhulk/$dp/sgm/*.sgm`)
+		##echo " ***** ----- ***** ----- $f =====> $ela_liv_sgm"
+		\cp $f $ela_liv_sgm
+	    end
+		endif
+				
+	    echo `date +'%Y-%m-%d - %T'`" Fin copie des fichiers depuis $ELA_LIV/alimhulk/$dp/sgm vers $ela_liv_sgm" >> $logfile
+
+
+	    ## -------------------------------------------
+	    echo `date +'%Y-%m-%d - %T'`" Debut copie des fichiers depuis $ELA_LIV/alimhulk/$dp/www vers $ELA_LIV/www" >> $logfile
+	    	    
+	    foreach f (`ls -d $ELA_LIV/alimhulk/$dp/www`)
+		\cp -r $f $ELA_LIV
+	    end
+
+	    ## -------------------------------------------
+	    ## 11/04/2013 alazreg
+	    ## mantis 3323
+	    ## probleme : le fichier www/pdf/tab02spe.pdf appelle bbar.pdf
+	    ## le fichier hulk/liv/alimhulk/dp02/www/pdf/bbar.pdf est préfixé en dp02_bbar.pdf (etape de alimhulk.pl)
+	    ## en attendant de préfixer l'appel dans tab02spe.pdf (script alimhulk.pl) je fais une copie bbar.pdf pour assurer la prod
+	    ## -------------------------------------------
+	    ## 16/04/2013
+	    ## mantis 3341 dp06_ba.pdf => ba.pdf
+	    ## -------------------------------------------
+	    pushd $ELA_LIV/www/pdf
+		if (-f dp02_bbar.pdf) then
+		    \cp dp02_bbar.pdf bbar.pdf
+		endif
+
+		if (-f dp06_ba.pdf) then
+		    \cp dp06_ba.pdf ba.pdf
+		endif
+	    popd
+
+	    echo `date +'%Y-%m-%d - %T'`" Fin copie des fichiers depuis $ELA_LIV/alimhulk/$dp/www vers $ELA_LIV/www" >> $logfile
+	    
+	    ## 23/01/2014 SF/MB : desactiver cette partie une fois le script de generation des XML des forms est operationnel
+	    ## --------------------------------------------------------------------------------------------------------------
+	    ## echo `date +'%Y-%m-%d - %T'`" Debut copie des fichiers depuis $ELA_LIV/alimhulk/$dp/xml vers $ELA_LIV/xml" >> $logfile
+	    ## foreach f (`ls $ELA_LIV/alimhulk/$dp/xml/*.xml`)
+		## \cp $f $ELA_LIV/xml
+	    ## end
+	    ## echo `date +'%Y-%m-%d - %T'`" Fin copie des fichiers depuis $ELA_LIV/alimhulk/$dp/xml vers $ELA_LIV/xml" >> $logfile
+		
+		# -------------------------------------------
+		# 22/08/2016 sfouzi : MAJ de la map des documents du GB Preventeur
+		if $dp == "gp95" then
+			echo `date +'%Y-%m-%d - %T'`" MAJ de la map des documents du GB Preventeur" >> $logfile
+			echo `date +'%Y-%m-%d - %T'`" MAJ de la map des documents du GB Preventeur"
+			preventeur.tcsh -prod
+		endif
+		# -------------------------------------------
+	end
+
+## 16/07/2013 AL/MB : activer la copie des maps sources tt le temps suite pbs jrp sans titre
+echo " Copie des maps sources : /usr/local/ela/cd-rom/elnet/data/sgml/prodmaps ==> $ELA_LIV/miscdata/ \n";
+\cp -rf /usr/local/ela/cd-rom/elnet/data/sgml/prodmaps/* $ELA_LIV/miscdata/
+
+endif ## FIN TEST if ($liste_dp_a_copier != "")
+
+
+# 07/08/2015 SF mantis 4329
+# Mise a jour du Set des IDs bofip depuis les fichiers bofip*.optj.sgm
+if ($bsources == true) then
+	echo "Construction d'un Set d'IDs bofip dans $ELA_TMP_IDX\n"
+	balise -src $ELA_SRC_GEN/extractIdBofip.bal -args -dirin $ela_liv_sgm/ -dirout $ELA_TMP_IDX/
+endif
+
+
+
+# Mantis 4380
+
+# Copie le contenu $ELA_LIV/txtblochulk (optj+toc)
+# Copie le contenu $ELA_LIV/jrpblochulk (optj+toc)
+# YE 12/05/2014
+# if ($dirAddFiles == "") then 
+if ($dirAddFiles == "" && $dirAddTxtFiles == "" && $dirAddJrpFiles == "") then 
+	foreach f (`ls $ELA_LIV/txtblochulk/*.sgm`)
+		\cp $f $ELA_LIV/sgm
+	end
+
+	# 16/09/2015 alzreg/sfouzi mantis 11702
+	# copier les PDF des textes depuis datacomm/figures
+	ls $ELA_LIV/sgm/elnet_txtbloc_*.optj.sgm
+	if ($status == 0) then
+		egrep -io '<fig[^>]+>' $ELA_LIV/sgm/elnet_txtbloc_*.optj.sgm | egrep -io 'fichier="[^"]+"' | cut -d'"' -f2 >! toto.txt
+		
+		foreach f (`cat toto.txt`)
+			set pdf = $ELA_DATACOMM/figures/$f.pdf
+			if (-f $pdf) then
+				\cp $pdf $ELA_LIV/www/pdf
+			endif
+		end
+		
+		rm -f toto.txt
+	endif
+
+	# YE Le 26/05/2014 7336
+	foreach f (`ls $ELA_LIV/txtantblochulk/*.sgm`)
+		\cp $f $ELA_LIV/sgm
+	end	
+	#copie des blocs jrp vers ELA_LIV/sgm
+	foreach f (`ls $ELA_LIV/jrpblochulk/uaur/*.sgm`)
+		\cp $f $ELA_LIV/sgm
+	end	
+	foreach f (`ls $ELA_LIV/jrpblochulk/toc/uaur/*.sgm`)
+		\cp $f $ELA_LIV/sgm
+	end		
+	
+endif
+
+# 18/09/2014 sfouzi
+# Copier le contenu de $ELA_LIV/addtxtfiles (optj+toc)
+if ($dirAddTxtFiles != "") then
+	foreach f (`ls $ELA_LIV/addtxtfiles/*.sgm`)
+		\cp $f $ELA_LIV/sgm
+	end
+endif
+
+if ($dirAddJrpFiles != "") then
+	foreach f (`ls $ELA_LIV/addjrpfiles/*.sgm`)
+		\cp $f $ELA_LIV/sgm
+	end
+endif
+
+# YE le 26/05/2014 Ne plus prendre les txt ant 
+# echo `date +'%Y-%m-%d - %T'`" Copie les txtbloc et les toc des txt a traiter" >> $logfile
+# foreach f ( `ls $ELA_LIV/sgm/elnet_txtbloc_*.optj.sgm` )
+		# set blocnum = `grep -io 'ID="ELNETTXTBLOC........' $f |cut -c17-22`
+		
+		# ls $ELA_LIV/alimhulk/sources/sgm/elnet_txtbloc_$blocnum.toc.sgm	>& /dev/null		
+		# if $status == 0 \cp $ELA_LIV/alimhulk/sources/sgm/elnet_txtbloc_$blocnum.toc.sgm $ela_liv_sgm
+		# Recuperer les txt ant
+		# ls $ELA_LIV/alimhulk/sources/sgm/elnet_txtantbloc_$blocnum.*.sgm	>& /dev/null	
+		# if ($status == 0) \cp $ELA_LIV/alimhulk/sources/sgm/elnet_txtantbloc_$blocnum.*.sgm $ela_liv_sgm
+# end
+
+## 24/02/2014 alazreg
+##mantis 6266
+## copier les maps dans tous les cas meme avec l'option -addfiles
+## 16/07/2013 AL/MB : activer la copie des maps sources tt le temps suite pbs jrp sans titre
+echo " Copie des maps sources : /usr/local/ela/cd-rom/elnet/data/sgml/prodmaps ==> $ELA_LIV/miscdata/ \n";
+
+## YE Le 13/10/2014 copier directement les map txt + jrp depuis TMP_IDX
+# \cp -rf /usr/local/ela/cd-rom/elnet/data/sgml/prodmaps $ELA_LIV/miscdata/
+
+# pushd /usr/local/ela/cd-rom/elnet/data/sgml/prodmaps/ >& /dev/null
+	# foreach f (ccolinfo.map codedata.map dico_decis.clt dico_txt.clt)
+		# \cp $f $ELA_LIV/miscdata/
+	# end
+# popd
+
+pushd $ELA_TMP_IDX/ >& /dev/null
+	foreach f (ccolinfo.map codedata.map dico_decis.clt dico_txt.clt jrpinfo.map jrpinfoEJP.map mapMDF.map mapTxtversionning.map mapjrp.map  maptxt.map)
+		\cp $f $ELA_LIV/miscdata/
+	end
+popd
+
+#############################################################
+## 21/06/2013 alazreg
+## Prevoir ici argument -addfiles <dossier>
+## Si argument -addfiles est fourni alors copier par defaut les fichiers SGML qui sont dans $dirAddFiles/*.sgm
+#############################################################
+## 03/10/2013 alazreg
+## mantis 4657
+## dans le cas des form2 penser à copier les formules interactives xml dans le dossier ./www/xml/
+## Le cas des formules interactives xml n'est pas gere par l'option -addfiles.
+## Il faudra les copier manuellement dans le dossier ./www/xml/ avant de lancer la commande "hulklivtest -addfiles dossier"
+#############################################################
+echo "debug avant addfiles"
+
+addfiles:
+if ($dirAddFiles != "") then
+	pushd $dirAddFiles
+		\cp $dirAddFiles/*.sgm $ELA_LIV/sgm >& /dev/null
+		\cp $dirAddFiles/sgm/*.sgm $ELA_LIV/sgm >& /dev/null
+
+		### =================================================== ####
+		## 04/03/2014 SF : Evol mantis 6325
+		## Livrer les fichiers annexes s'ils existent
+		### =================================================== ####
+		# creer par defaut les sous dossiers pdf html img pour eviter les test if -d dossier
+		mkdir -p pdf html img >& /dev/null
+		
+		\cp $dirAddFiles/pdf/*.pdf $ELA_LIV/www/pdf >& /dev/null
+		\cp $dirAddFiles/html/*.htm $ELA_LIV/www/html >& /dev/null
+		\cp $dirAddFiles/html/*.html $ELA_LIV/www/html >& /dev/null
+		\cp $dirAddFiles/xml/*.tmp.xml $ELA_LIV/xml >& /dev/null
+		pushd  $dirAddFiles/img
+			\cp *.png *.gif *.jpg *.jpeg $ELA_LIV/www/html/icons >& /dev/null
+		popd
+
+		# 19/11/2015 alazreg mantis 12209
+		# ajout copie recursive d'un dossier www pour faciliter les tests de z2081*.gif
+		\cp -r $dirAddFiles/www $ELA_LIV >& /dev/null
+
+		echo "Copie des fichiers addfiles OK"
+	popd
+endif
+
+# 02/07/2014 alazreg
+# mantis xxx scission dp05
+# decliner les listes des etudes et formules du dp05
+pushd $ELA_LIV/sgm
+	if (-f dp05_lst-et.optj.sgm || -f dp05_lst-form.optj.sgm) then
+			balise -src $ELA_SRC_GEN/dp05_declinaison_portail_rj.bal -args -dirin $PWD
+			rm -rf dp05scission >& /dev/null
+			mkdir -p dp05scission/uaur >& /dev/null
+			\mv dp05_lst-[a-z]*[0-9].optj.sgm dp05scission
+			balise49 -src $ELA_SRC_GEN/insere_UA_UR.bal -args -dtd $ELA_DTD/listels.dtd -dirin dp05scission -dirout dp05scission/uaur
+			\mv dp05scission/uaur/*.sgm $PWD
+			renamefiles .sgm.out .sgm
+	endif
+popd
+
+# 16/05/2014 alazreg
+# besoin specifique jouve
+# renommer le fichier elnet_txtbloc_200812 en aaelnet_txtbloc_200812
+# comme cela il passera en premier dans la chaine jouve
+# sinon plantage de la chaine jouve pour cause de out of memory
+pushd $ELA_LIV/sgm >& /dev/null
+	ls elnet_txtbloc_200812.optj.sgm >& /dev/null
+	if ($status == 0) \mv elnet_txtbloc_200812.optj.sgm aaelnet_txtbloc_200812.optj.sgm >& /dev/null
+	ls elnet_txtbloc_200812.toc.sgm >& /dev/null
+	if ($status == 0) \mv elnet_txtbloc_200812.toc.sgm aaelnet_txtbloc_200812.toc.sgm >& /dev/null
+popd >& /dev/null
+
+#############################################################
+## 03/06/2013 alazreg
+## Alerte Redaction
+#############################################################
+alerte_redaction:
+set dir_alerte_redaction = "/mac.public/hulk/alerte_redaction/www/html"
+if ("$smode" != "prod") set dir_alerte_redaction = "/mac.public/hulk/alerte_redaction/test/www/html"
+# \cp /mac.public/hulk/alerte_redaction/www/html/*.htm $ELA_LIV/www/html/
+\cp $dir_alerte_redaction/*.htm $ELA_LIV/www/html/
+
+chmod 776 $ELA_LIV/www/html/*.* >& /dev/null
+
+\rm -rf $ELA_LIV/sgm/tcb* >& /dev/null
+
+if ($bstop == true) goto endcommand
+
+
+
+# Le 12/06/2014 Mantis 7539 YE/AL 
+initMapRecapNew:
+balise -src /usr/local/ela/trt/src/elnet_initMapRecapnew.bal
+
+
+## ------------------------------------------------------------------------
+## 22/02/2013 AL
+## ajout de la résolution des liens inter gb repris de elnet_trtSpec
+## ------------------------------------------------------------------------
+interGB:
+# intergb:
+
+echo  `date +'%Y-%m-%d - %T'`" Resolution liens inter gb"
+echo  `date +'%Y-%m-%d - %T'`" Resolution liens inter gb" >> $logfile
+
+## 13/03/2013 MB : pour les liens interGB dans Hulk, on recupere les listes dans un dossier specifique
+###                attn : commencer par ceux de l'archive puis par ceux de ELA_LIV/sgm
+## --- MB 25/10/2013  : le repertoire des listes, interGBLinks, doit etre specifique a la plate-forme.
+##                      modifier ici et dans les scripts hulkliv/hulklivtest
+##mkdir -p $ELA_LIV/../interGBLinks
+mkdir -p $ELA_LIV/interGBLinks
+echo "nettoyage du dossier $ELA_LIV/interGBLinks/"
+##\rm -rf $ELA_LIV/../interGBLinks/*
+\rm -rf $ELA_LIV/interGBLinks/*
+echo "alimentation du dossier $ELA_LIV/interGBLinks/ avec les fichiers liste issus des archives : $ELA_LIV/archive/lastfullmaj/sgm/*lst*sgm :"
+\cp $ELA_LIV/archive/lastfullmaj/sgm/*lst*sgm $ELA_LIV/interGBLinks/
+echo "alimentation du dossier $ELA_LIV/interGBLinks/ avec les fichiers liste issus de : $ELA_LIV/sgm/*lst*sgm :"
+##\cp $ELA_LIV/sgm/*lst*sgm $ELA_LIV/../interGBLinks/
+\cp $ELA_LIV/sgm/*lst*sgm $ELA_LIV/interGBLinks/
+
+# 28/11/2016 alazreg mantis 13898 : mise à jour et appel du programme elnet_patchSGM.bal
+set cmd_elnet_patchSGM = "balise -src $ELA_SRC_GEN/elnet_patchSGM.bal"
+if ($smode != "prod") set cmd_elnet_patchSGM = "balise -src $ELA_SRC_GEN/elnet_patchSGM_test.bal"
+# balise -src $ELA_SRC_GEN/elnet_patchSGM.bal | tee $ELA_TRACE/tracesPatchSGM.txt
+$cmd_elnet_patchSGM | tee $ELA_TRACE/tracesPatchSGM.txt
+echo  `date +'%Y-%m-%d - %T'`" Fin Resolution liens inter gb"
+echo  `date +'%Y-%m-%d - %T'`" Fin Resolution liens inter gb" >> $logfile
+if ( $status != 0 ) then
+    set statusMailFinal = "ERREUR_WARN"
+endif
+
+if ($bstop == true) goto endcommand
+
+##nettoyerDossierSgm:
+##pushd $ela_liv_sgm
+##    ## on commence par supprimer fichiers autres que sgm
+##    \rm `find *.* | egrep '.*\..*' | egrep -v '\.sgm$'`
+##    ## 23/10/2012 alazreg
+##    ## supprimer des patch qui traineraient suite à un debug
+##    \rm *.patch.sgm >& /dev/null
+##popd
+
+##if ($bstop == true) goto endcommand
+
+## ------------------------------------------------------------------------
+## Generer le fichier $ELA_LIV/dtdfinder.txt qui contient le mappig fichier.sgm <-> dtd
+## ------------------------------------------------------------------------
+moduleDtdfinder:
+# dtdfinder:
+echo "Generation du fichier dtdfinder.txt"
+pushd $ELA_LIV
+    /usr/local/ela/bin/dtdfinder.tcsh
+popd
+echo "Fin generation du fichier dtdfinder.txt"
+
+## il ya un pb avec dtdfinder genere dans hulk
+## pas le temps de voir le script dtdfinder.tcsh, on ecrase par le fichier de elnet :
+##\cp /usr/local/ela/cd-rom/elnet/liv/dtdfinder.txt /usr/local/ela/cd-rom/hulk/liv/
+##\cp /usr/local/ela/cd-rom/elnet/liv/dtdfinder.txt $ELA_LIV
+
+if ($bstop == true) goto endcommand
+
+
+## ------------------------------------------------------------------------
+## 29/10/2012 alazreg
+## copie du dossier fshtmlp(test) vers ELA_LIV(TEST)
+## ------------------------------------------------------------------------
+# fshtmlp:
+copieFSHTMLP:
+
+echo  `date +'%Y-%m-%d - %T'`" Livraison du dossier fshtmlphulk(test)" >> $logfile
+
+echo "Commande : /usr/local/ela/bin/hulk_liv_fshtmlp $smode" >> $logfile
+
+/usr/local/ela/bin/hulk_liv_fshtmlp $smode >> $logfile
+
+echo  `date +'%Y-%m-%d - %T'`" Fin Livraison du dossier fshtmlphulk(test)" >> $logfile
+
+if ($bstop == true) goto endcommand
+
+
+
+moduleUaur:
+## ------------------------------------------------------------------------
+## 14/06/2012 AL/YTR
+## Generation des nouvelles UA pour HULK
+## Test uniquement sur les etudes pour demarrer
+## ------------------------------------------------------------------------
+echo  `date +'%Y-%m-%d - %T'`" Generation des nouvelles UA plus petites pour HULK" >> $logfile
+pushd $ela_liv_sgm/
+    ls *.body.sgm y5[0-9]*.optj.sgm >& /dev/null
+    if ($status == 0) then
+	\rm -rf etudes
+	mkdir etudes
+	echo `date +'%Y-%m-%d - %T'`" copie des fichiers $PWD/*.body.sgm + y5*optj.sgm dans un sous dossier temporaire $PWD/etudes" >> $logfile
+	\cp *.body.sgm y5[0-9]*.optj.sgm etudes
+	echo `date +'%Y-%m-%d - %T'`" copie terminée" >> $logfile
+	pushd etudes
+	    echo `date +'%Y-%m-%d - %T'`" Je suis dans le dossier $PWD" >> $logfile
+	    set balisecmd = "balise -src $ELA_SRC_GEN/insere_UA_UR.bal -args -dirin . -dtd $ELA_LIV/dtd/etd-optj.dtd -hulk"
+	    echo `date +'%Y-%m-%d - %T'`" lancement de la commande : $balisecmd" >> $logfile
+	    $balisecmd
+	    set retour = $status
+	    echo `date +'%Y-%m-%d - %T'`" code retour = $retour" >> $logfile
+	    if ($retour != 0) set statusMailFinal = "ERREUR_WARN"
+
+
+	    ## si des fichiers sont créés alors continuer les traitements
+	    ls *.sgm.out >& /dev/null
+	    if ($status == 0) then
+		set nb = `ls *.sgm.out | wc -l` >& /dev/null
+		echo `date +'%Y-%m-%d - %T'`" $nb fichiers *.sgm.out créés" >> $logfile   
+		renamefiles .sgm.out .sgm >& /dev/null
+		## 22/10/2012 alazreg
+		## on valide les nouveaux fichiers sgm avant de les intégrer dans le dossier $ela_liv_sgm
+		echo `date +'%Y-%m-%d - %T'`" Validation des nouveaux UAUR dans le dossier $PWD" >> $logfile
+		foreach f (*.sgm)
+		    set dtd = $ELA_LIV/dtd/`getDtdNameFromRootName $f`
+		    parsefile $f $dtd >& /dev/null
+		    if (-f $f.sgmlerr) then
+			set statusMailFinal = "ERREUR"
+			echo `date +'%Y-%m-%d - %T'`" $f non valide déplacé vers $dir_non_valides" >> $logfile
+			\mv $f.sgmlerr $dir_non_valides
+			\mv $f $dir_non_valides
+		    endif
+		end
+		echo `date +'%Y-%m-%d - %T'`" Validation des nouveaux UAUR terminée" >> $logfile
+
+				# 28/08/2017 ALAZREG https://jira.els-gestion.eu/browse/SIECDP-43 PHOENIX : avant de déplacer les études ont refait les TOC au cas où la TAP a été déplacée
+				set balisecmd = "balise -src $ELA_SRC_GEN/create-toc.bal -args et $PWD"
+				echo `date +'%Y-%m-%d - %T'`" lancement de la commande : $balisecmd" >> $logfile
+				$balisecmd
+				mkdir -p toc
+				\mv *.toc.sgm toc
+				pushd toc >& /dev/null
+					set balisecmd = "balise -src $ELA_SRC_GEN/insere_UA_UR.bal -args -dirin . -dtd $ELA_LIV/dtd/toc.dtd -hulk"
+					echo `date +'%Y-%m-%d - %T'`" lancement de la commande : $balisecmd" >> $logfile
+					$balisecmd
+					renamefiles .sgm.out .sgm
+				popd >& /dev/null
+				set nb = `toc/*.toc.sgm | wc -l`
+				echo `date +'%Y-%m-%d - %T'`" Déplacement de $nb toc de $PWD/toc vers $ela_liv_sgm" >> $logfile
+				\mv toc/*.sgm $ela_liv_sgm
+
+		## déplacer les études valides dans le dossier sgm
+		ls *.sgm >& /dev/null
+		if ($status == 0) then
+		    set nb = `*.sgm | wc -l`
+		    echo `date +'%Y-%m-%d - %T'`" Déplacement de $nb sgm valides de $PWD vers $ela_liv_sgm" >> $logfile
+		    \mv *.sgm $ela_liv_sgm
+		endif
+	    endif
+	popd
+    endif
+popd
+
+
+
+# YE LE 28/07/2015
+
+
+echo  `date +'%Y-%m-%d - %T'`" Generation des nouvelles UA plus petites pour HULK" >> $logfile
+pushd $ela_liv_sgm/
+
+	if (-f dp14_lst-code2.optj.sgm) then	
+		\rm -rf code2
+		mkdir code2
+		echo `date +'%Y-%m-%d - %T'`" copie des fichiers $PWD/dp14_lst-code2.optj.sgm  $PWD/code2" >> $logfile
+		\cp dp14_lst-code2.optj.sgm code2
+		echo `date +'%Y-%m-%d - %T'`" copie terminée" >> $logfile
+		pushd code2
+			echo `date +'%Y-%m-%d - %T'`" Je suis dans le dossier $PWD" >> $logfile
+			set balisecmd = "balise -src $ELA_SRC_GEN/insere_UA_UR.bal -args -dtd $ELA_DTD/listels.dtd -dirin . -purgeUAUR -hulk"
+			echo `date +'%Y-%m-%d - %T'`" lancement de la commande : $balisecmd" >> $logfile
+			$balisecmd
+			set retour = $status
+			echo `date +'%Y-%m-%d - %T'`" code retour = $retour" >> $logfile
+			if ($retour != 0) set statusMailFinal = "ERREUR_WARN"
+
+				## si des fichiers sont créés alors continuer les traitements
+				ls *.sgm.out >& /dev/null
+				if ($status == 0) then
+				set nb = `ls *.sgm.out | wc -l` >& /dev/null
+				echo `date +'%Y-%m-%d - %T'`" $nb fichiers *.sgm.out créés" >> $logfile   
+				renamefiles .sgm.out .sgm >& /dev/null
+				## 22/10/2012 alazreg
+				## on valide les nouveaux fichiers sgm avant de les intégrer dans le dossier $ela_liv_sgm
+				echo `date +'%Y-%m-%d - %T'`" Validation des nouveaux UAUR dans le dossier $PWD" >> $logfile
+				foreach f (*.sgm)
+					set dtd = $ELA_LIV/dtd/`getDtdNameFromRootName $f`
+					parsefile $f $dtd >& /dev/null
+					if (-f $f.sgmlerr) then
+						set statusMailFinal = "ERREUR"
+						echo `date +'%Y-%m-%d - %T'`" $f non valide déplacé vers $dir_non_valides" >> $logfile
+						\mv $f.sgmlerr $dir_non_valides
+						\mv $f $dir_non_valides
+					endif
+				end
+				echo `date +'%Y-%m-%d - %T'`" Validation des nouveaux UAUR terminée" >> $logfile
+
+				## déplacer les études valides dans le dossier sgm
+				ls *.sgm >& /dev/null
+				if ($status == 0) then
+					set nb = `*.sgm | wc -l`
+					echo `date +'%Y-%m-%d - %T'`" Déplacement de $nb sgm valides de $PWD vers $ela_liv_sgm" >> $logfile
+					\mv *.sgm $ela_liv_sgm
+				endif
+			endif
+		popd		
+	endif	
+popd
+
+## 
+# 24/10/2013 YE/MB : recreation des UA/UR pour les ccol
+#                    car nouveau decoupage : ajout ART dans liste des decoupage
+#                    en attendant de mettre en prod le nouveau programme insere_UA_UR.bal
+##
+echo  `date +'%Y-%m-%d - %T'`" Generation des nouvelles UA plus petites pour HULK et dans le cas des CCOL" >> $logfile
+pushd $ela_liv_sgm/
+    ls [oc]c*optj.sgm ?p[0-9][0-9]_[oc]c*optj.sgm | grep -v ccva | grep -v ccom >& /dev/null
+    if ($status == 0) then
+    \rm -rf ccol >& /dev/null
+    mkdir -p ccol >& /dev/null
+    echo `date +'%Y-%m-%d - %T'`" copie des ccol  dans un sous dossier temporaire $PWD/ccol" >> $logfile
+    \cp -f [oc]c*optj.sgm ?p[0-9][0-9]_[oc]c*optj.sgm ccol/
+    \rm -f ccol/ccva* ccol/ccom*
+    echo `date +'%Y-%m-%d - %T'`" copie terminée" >> $logfile
+    pushd ccol
+	echo `date +'%Y-%m-%d - %T'`" Je suis dans le dossier $PWD" >> $logfile
+	set balisecmd = "balise -src $ELA_SRC_GEN/insere_UA_UR_test.bal -args -dirin . -dtd $ELA_LIV/dtd/ccol-optj.dtd -hulk"
+	echo `date +'%Y-%m-%d - %T'`" lancement de la commande : $balisecmd" >> $logfile
+	$balisecmd
+	set retour = $status
+	echo `date +'%Y-%m-%d - %T'`" code retour = $retour" >> $logfile
+	if ($retour != 0) set statusMailFinal = "ERREUR_WARN"
+
+	## si des fichiers sont créés alors continuer les traitements
+	ls *.sgm.out >& /dev/null
+	if ($status == 0) then
+	    set nb = `ls *.sgm.out | wc -l` >& /dev/null
+	    echo `date +'%Y-%m-%d - %T'`" $nb fichiers *.sgm.out créés" >> $logfile   
+	    renamefiles .sgm.out .sgm >& /dev/null
+	    ## 22/10/2012 alazreg
+	    ## on valide les nouveaux fichiers sgm avant de les intégrer dans le dossier $ela_liv_sgm
+	    echo `date +'%Y-%m-%d - %T'`" Validation des nouveaux UAUR dans le dossier $PWD" >> $logfile
+	    foreach f (*.sgm)
+		set dtd = $ELA_LIV/dtd/`getDtdNameFromRootName $f`
+	    parsefile $f $dtd >& /dev/null
+		if (-f $f.sgmlerr) then
+		    set statusMailFinal = "ERREUR"
+		    echo `date +'%Y-%m-%d - %T'`" $f non valide déplacé vers $dir_non_valides" >> $logfile
+		    \mv $f.sgmlerr $dir_non_valides
+		    \mv $f $dir_non_valides
+	    endif
+	    end
+	    echo `date +'%Y-%m-%d - %T'`" Validation des nouveaux UAUR terminée" >> $logfile
+	    
+	## déplacer les études valides dans le dossier sgm
+	    ls *.sgm >& /dev/null
+	    if ($status == 0) then
+		set nb = `*.sgm | wc -l`
+		echo `date +'%Y-%m-%d - %T'`" Déplacement de $nb sgm valides de $PWD vers $ela_liv_sgm" >> $logfile
+		\mv *.sgm $ela_liv_sgm
+	endif
+	endif
+    popd
+    endif
+popd
+echo  `date +'%Y-%m-%d - %T'`" Fin Generation des nouvelles UA plus petites pour HULK et dans le cas des CCOL"
+    
+# fin modif 24/10/2013 YE/MB :
+
+## 
+# 04/02/2014 YE :recreation des UA/UR pour les TXTBLOC mantis 4213
+#                    car nouveau decoupage : ajout de plusieurs elems dans liste des decoupage
+#                    en attendant de mettre en prod le nouveau programme insere_UA_UR.bal
+##
+echo  `date +'%Y-%m-%d - %T'`" Generation des nouvelles UA plus petites pour HULK et dans le cas des TXTBLOC"
+echo  `date +'%Y-%m-%d - %T'`" Generation des nouvelles UA plus petites pour HULK et dans le cas des TXTBLOC" >> $logfile
+pushd $ela_liv_sgm/    
+	ls elnet_txtbloc_*optj.sgm >& /dev/null
+    if ($status == 0) then
+    \rm -rf txtbloc >& /dev/null
+    mkdir -p txtbloc >& /dev/null
+    echo `date +'%Y-%m-%d - %T'`" copie des TXTBLOC dans un sous dossier temporaire $PWD/txtbloc" >> $logfile
+    \cp -f elnet_txtbloc_*optj.sgm  txtbloc/
+    echo `date +'%Y-%m-%d - %T'`" copie terminée" >> $logfile
+    pushd txtbloc
+		echo `date +'%Y-%m-%d - %T'`" Je suis dans le dossier $PWD" >> $logfile
+		set balisecmd = "balise -src $ELA_SRC_GEN/insere_UA_UR_test.bal -args -dirin . -dtd $ELA_LIV/dtd/txtbloc-optj.dtd -hulk"
+		if ($smode == "prod") set balisecmd = "balise -src $ELA_SRC_GEN/insere_UA_UR.bal -args -dirin . -dtd $ELA_LIV/dtd/txtbloc-optj.dtd -hulk"
+		echo `date +'%Y-%m-%d - %T'`" lancement de la commande : $balisecmd" >> $logfile
+		$balisecmd
+		set retour = $status
+		echo `date +'%Y-%m-%d - %T'`" code retour = $retour" >> $logfile
+		if ($retour != 0) set statusMailFinal = "ERREUR_WARN"
+
+		## si des fichiers sont créés alors continuer les traitements
+		ls *.sgm.out >& /dev/null
+		if ($status == 0) then
+			set nb = `ls *.sgm.out | wc -l` >& /dev/null
+			echo `date +'%Y-%m-%d - %T'`" $nb fichiers *.sgm.out créés" >> $logfile   
+			renamefiles .sgm.out .sgm >& /dev/null	    
+			## on valide les nouveaux fichiers sgm avant de les intégrer dans le dossier $ela_liv_sgm
+			echo `date +'%Y-%m-%d - %T'`" Validation des nouveaux UAUR dans le dossier $PWD" >> $logfile
+			foreach f (*.sgm)
+			set dtd = $ELA_LIV/dtd/`getDtdNameFromRootName $f`
+			parsefile $f $dtd >& /dev/null
+			if (-f $f.sgmlerr) then
+				set statusMailFinal = "ERREUR"
+				echo `date +'%Y-%m-%d - %T'`" $f non valide déplacé vers $dir_non_valides" >> $logfile
+				\mv $f.sgmlerr $dir_non_valides
+				\mv $f $dir_non_valides
+			endif
+			end
+			echo `date +'%Y-%m-%d - %T'`" Validation des nouveaux UAUR terminée" >> $logfile
+			
+		## déplacer les txtbloc valides dans le dossier sgm
+			ls *.sgm >& /dev/null
+			if ($status == 0) then
+			set nb = `*.sgm | wc -l`
+			echo `date +'%Y-%m-%d - %T'`" Déplacement de $nb sgm valides de $PWD vers $ela_liv_sgm" >> $logfile
+			\mv *.sgm $ela_liv_sgm
+		endif
+		endif
+    popd
+    endif
+popd
+echo  `date +'%Y-%m-%d - %T'`" Fin Generation des nouvelles UA plus petites pour HULK et dans le cas des TXTBLOC"
+
+# fin modif 04/02/2014 YE :
+
+
+## 
+# 08/04/2015 YE :recreation des UA/UR pour les RECMAJ mantis 10607
+#     Redéfinir le titre dans les DEBUA                  
+##
+echo  `date +'%Y-%m-%d - %T'`" Generation des nouvelles UA plus petites pour HULK et dans le cas des RECMAJ"
+echo  `date +'%Y-%m-%d - %T'`" Generation des nouvelles UA plus petites pour HULK et dans le cas des RECMAJ" >> $logfile
+pushd $ela_liv_sgm/    
+	ls recmaj.optj.sgm >& /dev/null
+    if ($status == 0) then
+		\rm -rf recmaj >& /dev/null
+		mkdir -p recmaj >& /dev/null
+		echo `date +'%Y-%m-%d - %T'`" copie des recmaj dans un sous dossier temporaire $PWD/recmaj" >> $logfile
+		\cp -f recmaj.optj.sgm  recmaj/
+		echo `date +'%Y-%m-%d - %T'`" copie terminée" >> $logfile
+		pushd recmaj
+			echo `date +'%Y-%m-%d - %T'`" Je suis dans le dossier $PWD" >> $logfile
+			set balisecmd = "balise -src $ELA_SRC_GEN/insere_UA_UR_test.bal -args -dtd $ELA_DTD/recmaj-optj.dtd -dirin . -hulk"
+			if ($smode == "prod") set balisecmd = "balise -src $ELA_SRC_GEN/insere_UA_UR.bal -args -dtd $ELA_DTD/recmaj-optj.dtd -dirin . -hulk"
+			echo `date +'%Y-%m-%d - %T'`" lancement de la commande : $balisecmd" >> $logfile
+			$balisecmd
+			set retour = $status
+			echo `date +'%Y-%m-%d - %T'`" code retour = $retour" >> $logfile
+			if ($retour != 0) set statusMailFinal = "ERREUR_WARN"
+
+			## si des fichiers sont créés alors continuer les traitements
+			ls *.sgm.out >& /dev/null
+			if ($status == 0) then
+				set nb = `ls *.sgm.out | wc -l` >& /dev/null
+				echo `date +'%Y-%m-%d - %T'`" $nb fichiers *.sgm.out créés" >> $logfile   
+				renamefiles .sgm.out .sgm >& /dev/null	    
+				## on valide les nouveaux fichiers sgm avant de les intégrer dans le dossier $ela_liv_sgm
+				echo `date +'%Y-%m-%d - %T'`" Validation des nouveaux UAUR dans le dossier $PWD" >> $logfile
+				foreach f (*.sgm)
+					set dtd = $ELA_LIV/dtd/`getDtdNameFromRootName $f`
+					parsefile $f $dtd >& /dev/null
+					if (-f $f.sgmlerr) then
+						set statusMailFinal = "ERREUR"
+						echo `date +'%Y-%m-%d - %T'`" $f non valide déplacé vers $dir_non_valides" >> $logfile
+						\mv $f.sgmlerr $dir_non_valides
+						\mv $f $dir_non_valides
+					endif
+				end
+				echo `date +'%Y-%m-%d - %T'`" Validation des nouveaux UAUR terminée" >> $logfile
+				
+				## déplacer les txtbloc valides dans le dossier sgm
+				ls *.sgm >& /dev/null
+				if ($status == 0) then
+					set nb = `*.sgm | wc -l`
+					echo `date +'%Y-%m-%d - %T'`" Déplacement de $nb sgm valides de $PWD vers $ela_liv_sgm" >> $logfile
+					\mv *.sgm $ela_liv_sgm
+				endif
+			endif
+		popd
+    endif
+popd
+echo  `date +'%Y-%m-%d - %T'`" Fin Generation des nouvelles UA plus petites pour HULK et dans le cas des RECMAJ"
+
+# fin modif 08/04/2015 YE
+
+if ($bstop == true) goto endcommand
+
+patchSgml:
+## ------------------------------------------------------------------------
+## Patcher les fichier *.sgm
+## ------------------------------------------------------------------------
+pushd $ela_liv_sgm
+    ## 25/09/2012 MB : ajout option jrp pour ecraser le set des jrp EL à livrer
+    ## $balise_src_hulk_bal -args -patch -d .
+    ## $balise_src_hulk_bal -args -patch -d . -jrp
+
+    echo `date +'%Y-%m-%d - %T'`" Je suis dans le dossier $PWD"
+    echo `date +'%Y-%m-%d - %T'`" Je suis dans le dossier $PWD" >> $logfile
+
+    ## ------------------------------------------------------------------------
+    ## 08/02/2013 al/mb
+    ## ne pas préciser -jrp pour cumuler les id jrp EL dans le Set G_setIdjrpToBuild
+    ## Voir le programme $balise_src_hulk_bal => G_setIdjrpToBuild = loadObjectFromFile(exoticjrpFile);
+    ## ------------------------------------------------------------------------
+    ##set balisecmd = "$balise_src_hulk_bal -args -patch -d . -jrp $1"
+    ##set balisecmd = "$balise_src_hulk_bal -args -patch -d . $1"
+    set balisecmd = "$balise_src_hulk_bal -args -patch -d . -$smode"
+
+    echo `date +'%Y-%m-%d - %T'`" lancement de la commande : $balisecmd"
+    echo `date +'%Y-%m-%d - %T'`" lancement de la commande : $balisecmd" >> $logfile
+    $balisecmd
+
+    set retour = $status
+    if ($retour != 0) set statusMailFinal = "ERREUR_WARN"
+    echo `date +'%Y-%m-%d - %T'`" code retour = $retour" >> $logfile
+
+    set nb = `ls *.patch.sgm | wc -l` >& /dev/null
+    echo `date +'%Y-%m-%d - %T'`" $nb fichier patch.sgm créés" >> $logfile
+
+    ## 27/12/2012 al/mb
+    ## ajout d'une étape de contrôle du FDOC
+    ## chaque fichier SGML doir avoir un attribut M="{'classement':'FDOC/xxx/xxx/xxx'}"
+    ## Exemple dans cc002.optj.sgm  :M="{'classement':'FDOC/EL/CD15/CCOL/CC002'}"
+    echo `date +'%Y-%m-%d - %T'`" controle de la présence du classement FDOC dans les fichiers patch.sgm créés" >> $logfile
+    set nbSgmPatch = `ls *.patch.sgm | wc -l`
+    set nbSgm = `ls *.body.sgm *.optj.sgm | wc -l`
+    set dif =  `expr $nbSgmPatch - $nbSgm`
+    echo "dif nbSgmPatch ($nbSgmPatch) - nbSgm ($nbSgm) = $dif " >> $logfile
+    if ( $dif > $seuilPatchSgm ) then
+	echo `date +'%Y-%m-%d - %T'`" ERREUR nombre de fichiers .sgm différent du nombre de fichiers .patch.sgm" >> $logfile
+	echo "nbSgmPatch = $nbSgmPatch" >> $logfile
+	echo "nbSgm = $nbSgm" >> $logfile
+	## Envoyer une alerte par email + bloquer les traitements jouve
+	set bEnvoyerTrtJouve = false
+	set bstop = true
+	$sendmailcmd $user dev -s "hulkliv : ERREUR etape patch sgm" -c "ERREUR => Voir le fichier de log $logfile"
+	endif
+	if ($bstop == true) goto endcommand
+
+ 
+  	## controle attribut M (FDOC) dans les sgml
+    ##-------------------------------------------------------------------------------------
+    ## 24/03/2014 SF/MB : suite pb fichiers trop longs (sur 1 ligne)  
+    ##                    ==> on utilise un script perl a la place
+    ##                    le script prend 3 arguments :
+    ##                entree :
+    ##                    arg1 : repertoire a traiter
+    ##                    arg2 : filtre pour les fichiers (regexp)
+    ##                    arg3 : regexp a chercher dans le contenu des fichiers
+    ##                retour :
+    ##                    le nbre de fichier qui repondent a la regexp
+    ## set nbFdoc = getNbFilesMatchingRegExp $ela_liv_sgm .patch.sgm$ "classement':'FDOC/"
+    ##-------------------------------------------------------------------------------------
+
+    echo "2eme test ela_liv_sgm = $ela_liv_sgm"
+    set nbFdoc = `getNbFilesMatchingRegExp $ela_liv_sgm .patch.sgm$ "classement':'FDOC/"`
+    ## set nbFdoc = `grep -l "classement':'FDOC/" *.patch.sgm | wc -l`
+    
+    set dif =  `expr $nbSgmPatch - $nbFdoc`
+    echo "dif nbSgmPatch ($nbSgmPatch) -  nbFdoc($nbFdoc) = $dif " >> $logfile
+    if ($dif > $seuilFdoc) then
+	echo `date +'%Y-%m-%d - %T'`" ERREUR FDOC non renseigne dans les fichiers .patch.sgm" >> $logfile
+	echo "nb fichiers patch = $nbSgmPatch" >> $logfile
+	echo "nb Fdoc = $nbFdoc" >> $logfile
+	## Envoyer une alerte par email + bloquer les traitements jouve
+	set bEnvoyerTrtJouve = false
+	set bstop = true
+	$sendmailcmd $user dev -s "hulkliv : ERREUR etape patch sgm" -c "ERREUR => Voir le fichier de log $logfile"	
+    endif
+	if ($bstop == true) goto endcommand
+
+  
+    echo `date +'%Y-%m-%d - %T'`" controle de la présence du classement FDOC terminé" >> $logfile
+
+    ## corriger les entités a la sortie de balise
+    ls *.patch.sgm >& /dev/null
+    if ($status == 0) then
+	##mkdir -p patch >& /dev/null
+	foreach f (*.patch.sgm)
+	    ## Dans le patch sgml la fonction  dumpSubTree genere &#38;entite;
+	    ## Pour remplacer des cas &#38;entite; par &entite;
+	    patchPbDumpSubTree $f
+	end
+
+	## 15/10/2012 alazreg
+	## on valide les nouveaux fichiers sgm avant de les intégrer dans le dossier $ELA_LIV/sgm
+	\rm -rf patch/ >& /dev/null
+	mkdir -p patch
+	\mv *.patch.sgm patch/
+	##pushd $ELA_LIV/sgm/patch
+	pushd patch
+	    renamefiles .sgm.patch.sgm .sgm >& /dev/null
+	    ## Validation patch SGML
+	    echo `date +'%Y-%m-%d - %T'`" Validation patch SGML en cours dans le dossier $PWD" >> $logfile
+	    foreach f (*.sgm)
+		set dtd = $ELA_LIV/dtd/`getDtdNameFromRootName $f`
+		parsefile $f $dtd >& /dev/null
+		if (-f $f.sgmlerr) then
+		    set statusMailFinal = "ERREUR"
+		    echo `date +'%Y-%m-%d - %T'`" $f non valide avec $dtd déplacé de $PWD vers $dir_non_valides" >> $logfile
+		    \mv $f.sgmlerr $dir_non_valides
+		    \mv $f $dir_non_valides
+		endif
+	    end
+	    echo `date +'%Y-%m-%d - %T'`" Validation patch SGML terminee" >> $logfile
+	    
+	    ls *.sgm >& /dev/null
+	    if ($status == 0) then
+		set nb = `ls *.sgm | wc -l`
+		echo `date +'%Y-%m-%d - %T'`" deplacement des "$nb" sgm valides de $PWD vers $ela_liv_sgm" >> $logfile
+		\mv *.sgm $ela_liv_sgm
+	    endif
+	popd
+    endif
+	
+	
+	# 08/09/2015 SF mantis 4329
+	# Patch des etudes optj pour remplacer l'element XACODE des renvois bofip inactifs par CDXACODE
+	echo `date +'%Y-%m-%d - %T'`" patch des renvois bofip inactifs" >> $logfile
+	# 28/11/2016 alazreg mantis 13898 : creation et appel d'une commande de test patchRenvoisBofip_test.bal	
+	# balise -src $ELA_SRC_GEN/patchRenvoisBofip.bal -args -dirdtd $ELA_DTD -dirin $PWD -dirout $PWD/../patchRenvoisBofip
+	set cmd_patchRenvoisBofip = "balise -src $ELA_SRC_GEN/patchRenvoisBofip.bal"
+	if ($smode != "prod") set cmd_patchRenvoisBofip = "balise -src $ELA_SRC_GEN/patchRenvoisBofip_test.bal"
+	$cmd_patchRenvoisBofip -args -dirdtd $ELA_DTD -dirin $PWD -dirout $PWD/../patchRenvoisBofip
+	pushd ..
+		\mv $PWD/patchRenvoisBofip/*.sgm $PWD/sgm	
+		# Envoi d'un rapport des liens bofip inactifs aux charges de produits
+		if (-f $PWD/patchRenvoisBofip/rapport_liens_bofip_casses.csv) then
+			\mv $PWD/patchRenvoisBofip/rapport_liens_bofip_casses.csv $PWD/patchRenvoisBofip/rapport_liens_bofip_casses_$dateprod.csv
+			set nbLignes = `cat $PWD/patchRenvoisBofip/rapport_liens_bofip_casses_$dateprod.csv | wc -l`
+			if ($nbLignes > 1) then
+				echo "Voir rapport ci-joint." | mutt -s "mail auto hulkliv : renvois bofip inactifs" -a $PWD/patchRenvoisBofip/rapport_liens_bofip_casses_$dateprod.csv -- cchareau@editions-legislatives.fr asplanzol@editions-legislatives.fr bboubee@editions-legislatives.fr cnock@editions-legislatives.fr jdfavre@editions-legislatives.fr jjezegou@editions-legislatives.fr modeant@editions-legislatives.fr mriols@editions-legislatives.fr ppruneta@editions-legislatives.fr sbouret@editions-legislatives.fr s.fouzi-ext@lefebvre-sarrut.eu
+			endif
+		endif
+	popd
+	
+	
+popd
+
+## 22/07/2013 MB : on teste si le fichier $ELA_LIV/miscdata/G_fileIDJrpToClean n'est pas vide, on envoie un mail
+##                 pour la mise a jour de la base mongodb jouve
+jrpToClean:
+if ( -e $ELA_LIV/miscdata/G_fileIdjrpToClean.txt && ! -z $ELA_LIV/miscdata/G_fileIdjrpToClean.txt ) then
+    if ( ! -e $ELA_LIV/miscdata/G_fileIdjrpToClean.cumul.txt ) then
+	touch $ELA_LIV/miscdata/G_fileIdjrpToClean.cumul.txt
+    endif
+    cat $ELA_LIV/miscdata/G_fileIdjrpToClean.txt >> $ELA_LIV/miscdata/G_fileIdjrpToClean.cumul.txt
+    $sendmailcmd alazreg mbaziz ytruchot cchareau -s "Warning : des jrp ne sont plus livrees par les EL ==> un nettoyage doit etre fait dans la base mongodb :\n Pour la liste des jrp a nettoyer, consulter le fichier : $ELA_LIV/miscdata/G_fileIdjrpToClean.txt\n"
+endif
+
+
+
+if ($bstop == true) goto endcommand
+
+## 16/01/2014 : SF/MB Ajout Etape pour regenerer les XML des formulaires apres le patch des IDs logiques
+##              car ceux générés l'ont été avant l'insertion des IDs logiques
+##
+genereFormsXML:
+echo " REGENERATION DES FORMS XML "
+pushd $ELA_LIV
+	lance_form2_interactif .
+popd
+
+echo " TRAITTS FORMS XML TERMINES "
+
+## ancien emplacement de l'appel optj2exalead
+
+## ------------------------------------------------------------------------------
+## préparer les papidoc
+## ------------------------------------------------------------------------------
+optj2exalead:
+## 22/10/2012 alazreg
+## etape à lancer après avoir fini de préparer les sgml (uaur des études fini + makeblocs des jrp fini + patch fini)
+## 12/10/2012 alazreg
+## pour hulk pas besoin des pmap
+##set optj2exalead_cmd = "optj2exalead_v2 hulk -boveille -vp -pmap -ejp purge"
+
+## 01/05/2013 MB : refaire le dtdfinder.txt a cause des codes EL embarques (lors du patch)
+## il faut peu etre le faire aussi a un autre endroit ...
+echo "pushd $ELA_LIV"
+pushd $ELA_LIV
+    echo "/usr/local/ela/bin/dtdfinder.tcsh"
+    /usr/local/ela/bin/dtdfinder.tcsh
+popd
+
+## ------------------------------------------------------------------------------
+## 14/10/2013 alazreg/yendichi
+## integration du nouveau programme pour generer les papidoc .iso.xml
+## on n'appelle plus le script optj2exalead_v2 mais directement le programme balise
+## ------------------------------------------------------------------------------
+##if ($G_bTrExalead == true) then
+##    set optj2exalead_cmd = "optj2exalead_v2 hulk -boveille -vp purge"
+##    echo `date +'%Y-%m-%d - %T'`" début de la commande $optj2exalead_cmd" >> $logfile
+##    $optj2exalead_cmd
+##    echo `date +'%Y-%m-%d - %T'`" commande $optj2exalead_cmd terminée" >> $logfile
+##endif
+
+## definir ici les dossiers entree et sortie
+set dirin = $ELA_LIV/sgm
+set dirout = $ELA_LIV/exalead/xmliso
+
+# 25/02/2014 SF mantis 5964 : nettoyage du dossier $ELA_LIV/exalead/xmliso
+echo "nettoyage du dossier $dirout"
+\rm $dirout/* >& /dev/null
+
+## creer le dossier de sortie si inexistant
+mkdir -p $dirout >& /dev/null
+
+echo `date +'%Y-%m-%d - %T'`"Generation des papidoc .iso.xml" >> $logfile
+
+if ($smode == "prod") then
+	# YE 13/04/2015 Ajout arg datemaj
+	if ($bdatemaj == true) then	
+		balise -src $ELA_SRC_GEN/optj2exalead_hulk.bal -args -dirdtd $ELA_DTD -dirin $dirin -dirout $dirout  -datemaj $datemaj
+	else 
+	balise -src $ELA_SRC_GEN/optj2exalead_hulk.bal -args -dirdtd $ELA_DTD -dirin $dirin -dirout $dirout
+	endif 	
+else
+	# YE 13/04/2015 Ajour arg datemaj
+	if ($bdatemaj == true) then	
+		balise -src $ELA_SRC_GEN/optj2exalead_hulk_test.bal -args -dirdtd $ELA_DTD -dirin $dirin -dirout $dirout -test -datemaj $datemaj
+	else
+		balise -src $ELA_SRC_GEN/optj2exalead_hulk_test.bal -args -dirdtd $ELA_DTD -dirin $dirin -dirout $dirout -test
+	endif
+endif
+
+## transcoder les .iso.xml en utf-8
+
+pushd $dirout
+	## 31/01/2014 alazreg/yendichi
+	## le transcodage est fait directement dans le programme balise pour chaque fichier
+    ##echo `date +'%Y-%m-%d - %T'`"Transcodage des papidoc .iso.xml en utf8.xml" >> $logfile
+    newentities2utf8_optim . xml 5
+	
+    renamefiles .iso.xml.utf8 .papi.utf8.xml >& /dev/null
+
+    ## deplacer tous les papidoc utf-8 valide dans le dossier xmlutf8 pour jouve
+    set dirxmlutf8 =  $ELA_LIV/exalead/xmlutf8
+    mkdir -p $dirxmlutf8 >& /dev/null
+	
+	# 25/02/2014 SF mantis 5964 : nettoyage du dossier $ELA_LIV/exalead/xmlutf8
+	echo "nettoyage du dossier $dirxmlutf8"
+	\rm $dirxmlutf8/* >& /dev/null
+	
+    \mv *.papi.utf8.xml $dirxmlutf8
+
+    ## validation des papidoc utf-8
+    pushd  $dirxmlutf8
+		parsexml . $ELA_LIV/dtd/papidoc.dtd >& /dev/null
+
+		## les xml non vaildes sont deplaces dans un dossier xmlerr
+		set dirxmlerr =  $ELA_LIV/exalead/xmlerr
+		mkdir -p $dirxmlerr >& /dev/null
+		set bxmlerr = false
+		
+		## verifier qu'il y a bien des fichiers xml sinon plantage de la boucle foreach
+		ls *.xml >& /dev/null
+		if ($status == 0 ) then
+			foreach f (*.papi.utf8.xml)
+				if (-e $f.xmlerr) then
+					\mv $f $dirxmlerr
+					\mv $f.xmlerr $dirxmlerr
+					set bxmlerr = true
+				endif
+			end
+		endif
+
+		if ($bxmlerr == true) then
+			echo `date +'%Y-%m-%d - %T'`"ERREUR validation des papidoc utf-8. Voir le dossier $dirxmlerr" >> $logfile
+			set statusMailFinal = "ERREUR"
+		endif
+    popd
+popd
+
+if ($bstop == true) goto endcommand
+
+echo "FIN optj2exalead"
+
+
+## ------------------------------------------------------------------------
+## Generer la cdcoll.sgm
+## ------------------------------------------------------------------------
+generationCdcoll:
+pushd $ela_liv_sgm
+	# 11/06/2014 sfouzi
+	# mantis 6654
+	# integration du nouveau programme de generation de la cdcoll hulk_cdoll_create.bal
+	echo `date +'%Y-%m-%d - %T'`" Generation de la cdcoll $PWD/cdcoll.sgm" >> $logfile
+	
+	# 06/03/2015 sf/ye ajout attribut force-reload ==> a desactiver
+	# if ($G_bForcereload == true) then
+		# balise -src $ELA_SRC_GEN/hulk_cdcoll_create.bal -args -dirin $PWD -dirout $PWD forcereload
+	# else
+		# balise -src $ELA_SRC_GEN/hulk_cdcoll_create.bal -args -dirin $PWD -dirout $PWD
+	# endif
+
+	# 04/06/2015 alazreg
+	# appel de la version hulk_cdcoll_create.bal de test dans le cas de test
+	set cmd = "balise -src $ELA_SRC_GEN/hulk_cdcoll_create.bal -args -dirin $PWD -dirout $PWD"
+	if ($smode != "prod") set cmd = "balise -src $ELA_SRC_GEN/test/hulk_cdcoll_create.bal -args -dirin $PWD -dirout $PWD"
+	if ($G_bForcereload == true) set cmd = "$cmd forcereload"
+	$cmd
+	
+	# copier le fichier template subscription.sgm
+	\cp $ELA_CDROM/elnet/data/sgml/config_file/subscription.sgm $PWD
+	
+	## patcher ici la cdcoll qui contient des valeur KEY qui ne corespondent pas aux ID des racines SGML
+    ## Voir fiche mantis 1506
+    ## Voir fiche mantis 2913
+    ## Voir fiche mantis 2944
+	cat cdcoll.sgm | sed 's/Y5COMJRP/DOC1A/g' | sed 's/Y5LSTSYN/Y5LSTET/g' | sed 's/BOOK KEY="ELNETDOCAM/BOOK KEY="/g' | sed 's/TOCELNETDOCAM/TOC/g' >! cdcoll.out
+	\mv cdcoll.out cdcoll.sgm
+	
+	echo `date +'%Y-%m-%d - %T'`" Fin generation de la cdcoll $PWD/cdcoll.sgm" >> $logfile
+popd
+
+## 26/02/2013 AL
+## refaire le dtdfinder.txt a cause du fichier aaelnet_txtbloc_200812.optj.sgm
+## qui est créé par le cdcoll_create.bal
+pushd $ELA_LIV
+    /usr/local/ela/bin/dtdfinder.tcsh
+popd
+
+
+if ($bstop == true) goto endcommand
+
+
+## ------------------------------------------------------------------------
+## 01/08/2012 AL
+## Des probleme de parse on et rencontres a cause des IDREF NMTOKEN
+## Avant de valider on transforme les IDREF NMTOKEN en IDEREF CDATA dans les dtd
+## ------------------------------------------------------------------------
+dtdNMTOKEN:
+pushd $ELA_LIV/dtd
+    foreach f ( *.dtd)
+	cat $f  | sed 's/IDREF NMTOKEN/IDREF CDATA/g' >! $f.out
+	\mv $f.out $f
+    end
+popd
+
+if ($bstop == true) goto endcommand
+
+
+
+generationSgmlUtf8:
+## ------------------------------------------------------------------------
+## A FAIRE APRES LE PATCH SGML ASCII
+## Generer un fonds SGML UTF-8 pour HULK
+## Il s'agit de transcoder les entites nommees HTML en entites numeriques UTF-8 UNICODE
+## Utililiser le script newentities2utf8_hulk pour eviter les entites hexadecimales qui posent probleme
+## ------------------------------------------------------------------------
+echo "Generation du fonds SGML UTF-8 pour HULK"
+##pushd $ELA_LIV/sgm
+pushd $ela_liv_sgm
+    echo `date +'%Y-%m-%d - %T'`" Generation du fonds SGML UTF-8 pour HULK dans le dossier $PWD" >> $logfile
+    ##newentities2utf8_hulk_v2 .sgm$ .
+    newentities2utf8_optim . sgm 5
+    echo `date +'%Y-%m-%d - %T'`" Fin de la generation du fonds SGML UTF-8 pour HULK" >> $logfile
+popd
+
+
+
+## ------------------------------------------------------------------------
+## validation des sgml utf-8
+## ------------------------------------------------------------------------
+validationSgmlUtf8:
+echo "Validation du fonds SGML UTF-8 pour HULK"
+
+pushd $ela_liv_sgm
+    ## 22/10/2012 alazreg
+    ## on valide les nouveaux fichiers sgm utf8 avant de les intégrer dans le dossier $ELA_LIV/sgm_entites_nums
+    \rm -rf utf8 >& /dev/null
+    mkdir -p utf8
+    ls *.sgm.utf8 >& /dev/null 
+    if ($status == 0) then
+	\mv *.utf8 utf8/
+	##pushd $ELA_LIV/sgm/patch
+	pushd utf8
+	    renamefiles .sgm.utf8 .sgm >& /dev/null
+	    ## Validation SGML UTF-8
+	    echo `date +'%Y-%m-%d - %T'`" Validation SGML UTF-8 en cours dans le dossier $PWD" >> $logfile
+	    foreach f (*.sgm)
+		if (`basename $f` == "subscription.sgm") continue;
+		## 01/05/213 MB : pb de parse des docs bofip apres etape utf8
+		## cela ne pose pas de pb chez jouve et on ne fait aucun traitt apres, on ignore donc le parse de ces fichiers
+		echo $f | grep 'bofip' >& /dev/null
+		if ($status == 0) continue 
+
+		set dtd = $ELA_LIV/dtd/`getDtdNameFromRootName $f`
+		##parsefile $f $dtd >& /dev/null
+		set ela_dec = ""
+		if (`basename $f` == "cdcoll.sgm") set ela_dec = $ELA_DEC
+		ubalise $ela_dec $dtd $f >! $f.sgmlerr
+		if (-z $f.sgmlerr) then
+		    \rm -f $f.sgmlerr
+		else
+		    echo `date +'%Y-%m-%d - %T'`" $f non valide déplacé de $PWD vers $dir_non_valides" >> $logfile
+		    \mv $f.sgmlerr $dir_non_valides
+		    \mv $f $dir_non_valides
+		endif
+	    end
+	    echo `date +'%Y-%m-%d - %T'`" Validation SGML UTF-8 terminée" >> $logfile
+
+	    ls *.sgm >& /dev/null
+	    if ($status == 0) then
+		set nb = `ls *.sgm | wc -l`
+		echo `date +'%Y-%m-%d - %T'`" deplacement des "$nb" sgm valides de $PWD vers $ela_liv_sgm_entites_nums" >> $logfile
+		## 26/10/2012 alazreg
+		## Correction erreur sur le dossier cible
+		## Remplacer la cible sgm par sgm_entites_nums
+		##\mv *.sgm $ela_liv_sgm
+		\mv *.sgm $ela_liv_sgm_entites_nums
+
+	    endif
+	popd
+    endif
+popd
+
+
+echo "Validation du fonds SGML UTF-8 pour HULK terminee"
+
+if ($bstop == true) goto endcommand
+
+##purgerDossiersUcUciMfi:
+### attention a ne pas supprimer si une autre étape est demandée
+##if ($etape == "" || $etape == "supprDossiersUcUciMfi") then    
+##    \rm  $ELA_LIV/uc/* &
+##    \rm  $ELA_LIV/mfi/* &
+##    \rm  $ELA_LIV/exalead/xml/*.urx.xml &
+##endif
+
+##if ($bstop == true) goto endcommand
+
+## ------------------------------------------------------------------------
+## Creer les UC UCX URX
+## ------------------------------------------------------------------------
+generationUcUcxUrxUci:
+echo "Generation des UC UCX URX"
+echo `date +'%Y-%m-%d - %T'`" je suis dans le dossier $PWD" >> $logfile
+
+pushd $ela_liv_sgm
+    ## on lance le programme balise qui genere des fichiers dans le meme dossier
+    echo `date +'%Y-%m-%d - %T'`" generation des uc ucx urx uci" >> $logfile
+
+    ##set balisecmd = "$balise_src_hulk_bal -args -uc -d $ela_liv_sgm $1"
+    set balisecmd = "$balise_src_hulk_bal -args -uc -d $ela_liv_sgm -$smode"
+    echo `date +'%Y-%m-%d - %T'`" lancement de la commande : $balisecmd" >> $logfile
+    $balisecmd
+    set set retour = $status
+    if ($retour == 2) set statusMailFinal = "ERREUR"
+    if ($retour == 1) set statusMailFinal = "WARN"
+
+    echo `date +'%Y-%m-%d - %T'`" code retour = $retour" >> $logfile
+
+    if ($retour != 0) then
+	echo "ERREUR code retour different de 0" >> $logfile
+	## ------------------------------------------------------------------------
+	## 18/02/2013 AL
+	## meme si erreurs on laisse le script aller jusqu'au bout
+	## sinon on risquent de louper plein de fichiers a cause d'un seul qui a des problemes
+	## ------------------------------------------------------------------------
+	##echo "ABANDON" >> $logfile
+	##goto endcommand
+    endif
+
+    echo `date +'%Y-%m-%d - %T'`" generation des uc ucx urx uci terminée" >> $logfile
+
+
+    ## On marques des compteurs dans le log
+    echo `ls *.uc.xml | wc -l`' uc.xml générés' >> $logfile
+    echo `ls *.ucx.xml | wc -l`' ucx.xml générés' >> $logfile
+    echo `ls *.uci.xml | wc -l`' uci.xml générés' >> $logfile
+    echo `ls *.urx.xml | wc -l`' urx.xml générés' >> $logfile
+popd
+
+echo "Generation des UC UCX URX terminee"
+
+if ($bstop == true) goto endcommand
+
+validation_uc:
+
+echo "Validation des UC UCX URX"
+
+pushd $ela_liv_sgm
+    ## 09/10/2012 AL
+    ## Pour gagner du temps en mode debug
+    ## Ajouter ici toutes les etapes jusqu'a la livraison dans les dossiers finaux
+    ## $ELA_LIV/uc/*.(uc|ucx).xml
+    ## $ELA_LIV/mfi/*.uci.xml
+    ## $ELA_LIV/exalead/xml/*.urx.xml
+
+    ## 1 Deplacer les xml générés dans des dossiers temporaires
+    echo `date +'%Y-%m-%d - %T'`" deplacement des uc ucx urx uci dans sous dossiers temporaires" >> $logfile
+    foreach d (uc_ucx_uci urx)
+	\rm -rf $d >& /dev/null
+	mkdir -p $d
+    end
+
+    echo `date +'%Y-%m-%d - %T'`" deplacement des uc ucx uci dans sous dossiers temporaires ./uc_ucx_uci/" >> $logfile
+    \mv *.uc.xml *.ucx.xml *.uci.xml ./uc_ucx_uci/ >& /dev/null
+    echo `date +'%Y-%m-%d - %T'`" deplacement des urx dans sous dossiers temporaires ./urx/" >> $logfile
+    \mv *.urx.xml ./urx/ >& /dev/null
+
+    ## 07/02/2013 al
+    ## déplacer les urf dans le dossier ela_liv_urf
+    \mv *.urf.xml $ela_liv_urf >& /dev/null
+
+    echo "Transcodage des urf en entites numeriques ..."
+    ## 29/04/2013 MB : ajout transcode des urf 
+    ## suite pbs entites apres traitt integrale matieres + sources sur test.validation
+    pushd $ela_liv_urf >& /dev/null
+		newentities2utf8_optim . xml 5
+		## Renommer les fichiers .xml.utf8 en .xml
+		renamefiles .xml.utf8 .xml >& /dev/null
+    popd
+    echo "Ok."
+
+
+    ## 2 Patcher les xml a la sortie de balise
+    ## 28/12/2012 MB : cette etape n'est plus necessaire ==> a enlever
+    foreach d (uc_ucx_uci urx)
+		pushd $d >& /dev/null
+			echo `date +'%Y-%m-%d - %T'`" patchPbDumpSubTree dans $PWD" >> $logfile
+			##find . -type f | egrep '.(uc|ucx|urx|uci).xml$' >& /dev/null
+			find . -type f | egrep '.(uc|ucx|urx|uci).xml$' >& /dev/null
+			if ($status == 0) then
+				foreach f (*.xml)
+					patchPbDumpSubTree $f
+				end
+			endif
+		popd
+    end
+
+    ## 2bis transcoder en entites numeriques
+    foreach d (uc_ucx_uci urx)
+		pushd $d >& /dev/null
+			echo `date +'%Y-%m-%d - %T'`" transcodage utf-8 dans $PWD" >> $logfile
+			find . -type f | egrep '.(uc|ucx|urx|uci).xml$' >& /dev/null
+			if ($status == 0) then
+				## Transcodage en UTF-8
+				##newentities2utf8 .xml$ .
+				## 04/10/2012 AL/MB : //lisation de l'étape 
+				##
+				##newentities2utf8_hulk_v2 .xml$ .
+				newentities2utf8_optim . xml 5
+				
+				# -----------------------------------------------------------
+				# 05/07/2017 SF/RB Jira https://jira.els-gestion.eu/browse/SIECDP-241
+				# Modif dans le cadre de Phoenix - element metadata.
+				# Pour eviter le transcodage du titre dans l'element metadata, je desactive le transcodage des UC
+				# Les UC sont a la base transcodees a la sortie du programme hulk.bal sauf le texte a l'interieur des CDATA.
+				# echo "debugsf avant foreach"
+				if ($d == "uc_ucx_uci") then
+					ls *.uc.xml
+					if ($status == 0) then
+						foreach f (*.uc.xml)
+							\cp $f $f.utf8
+							iconv -f ISO-8859-1 -t UTF8 $f.utf8 -o $f.utf8.tmp
+							\mv $f.utf8.tmp $f.utf8
+						end
+					endif
+				endif
+				# echo "debugsf apres foreach"				
+				# -----------------------------------------------------------
+						
+				
+				## Renommer les fichiers .xml.utf8 en .xml
+				renamefiles .xml.utf8 .xml >& /dev/null
+			endif
+		popd
+    end
+
+    ## 3 Valider les xml
+    foreach d (uc_ucx_uci urx)
+		pushd $d >& /dev/null
+			echo `date +'%Y-%m-%d - %T'`" validation xml dans $PWD" >> $logfile
+			find . -type f | egrep '.(uc|ucx|urx|uci).xml$' >& /dev/null
+			if ($status == 0) then
+			if ($d == "urx") parsexml . $ELA_LIV/dtd/papidoc.dtd >& /dev/null
+			if ($d == "uc_ucx_uci") parsexml . -xsd $ELA_LIV/dtd/xml_schema/gendocs.xsd >& /dev/null
+			endif
+		popd
+    end
+
+    ## 4 Deplacer les xml invalides dans le dossier de backup
+    foreach d (uc_ucx_uci urx)
+		pushd $d >& /dev/null
+			##find . -type f | egrep '.xmlerr$' >& /dev/null
+			ls *.xmlerr >& /dev/null
+			if ($status == 0) then
+				set nb = `find . -type f | egrep '.xmlerr$' | wc -l`
+				set nb = `ls *.xmlerr | wc -l`
+				echo `date +'%Y-%m-%d - %T'`" deplacement des "$nb" xml invalides de $PWD vers $dir_non_valides" >> $logfile
+				foreach f (*.xmlerr)
+					set ficxml = `echo $f | sed 's/.xmlerr//g'`
+					##echo `date +'%Y-%m-%d - %T'`" mv $f $dir_non_valides" >> $logfile
+						\mv $f $dir_non_valides
+					##echo `date +'%Y-%m-%d - %T'`" $ficxml invalide" >> $logfile
+					\mv $ficxml $dir_non_valides
+				end
+			endif
+		popd
+    end
+
+    ## 5 Deplacer les xml valides dans le dossier de prod final
+
+##set ela_liv_uc = $ELA_LIV/uc
+##set ela_liv_mfi = $ELA_LIV/mfi
+##set ela_liv_exalead_xml = $ELA_LIV/exalead/xml
+
+    foreach d (uc_ucx_uci urx)
+		pushd $d >& /dev/null
+			##find . -type f | egrep '.xml$' >& /dev/null
+			ls *.xml >& /dev/null
+			if ($status == 0) then
+				##set nb = `find . -type f | egrep '.xml$' | wc -l`
+				set nb = `ls *.xml | wc -l`
+				echo `date +'%Y-%m-%d - %T'`" deplacement des "$nb" xml valides de $PWD vers xxx" >> $logfile
+				if ($d == "urx") then
+					echo `date +'%Y-%m-%d - %T'`' mv *.urx.xml '$ela_liv_exalead_xml >> $logfile
+					\mv *.urx.xml $ela_liv_exalead_xml
+				endif
+				if ($d == "uc_ucx_uci") then
+					echo `date +'%Y-%m-%d - %T'`' \mv *.uci.xml '$ela_liv_mfi >> $logfile
+					\mv *uci.xml $ela_liv_mfi
+					echo `date +'%Y-%m-%d - %T'`' \mv *.(uc|ucx).xml '$ela_liv_uc >> $logfile
+					\mv *.uc.xml $ela_liv_uc
+					\mv *.ucx.xml $ela_liv_uc
+				endif
+			endif
+		popd
+    end
+popd
+echo "Validation des UC UCX URX terminee"
+if ($bstop == true) goto endcommand
+
+moduleMfi:
+echo "Generation des MFI en cours"
+pushd $ELA_LIV/xml >& /dev/null
+    echo `date +'%Y-%m-%d - %T'`" debut traitements $0 $*" >> $logfile
+    echo `date +'%Y-%m-%d - %T'`" generation des mfi" >> $logfile
+    ## 28/12/2012 MB : pour que les mfi se génèrent 
+    ##                 ==> il faut s'assurer que : $ELSLIVNAME est positionnée à "HULKTEST" 
+    ##set balisecmd = "$balise_src_hulk_bal -args -mfi -d $ela_liv_sgm $1"
+    # set balisecmd = "$balise_src_hulk_bal -args -mfi -d $ela_liv_sgm -$smode"
+	set balisecmd = "balise -src $ELA_SRC_GEN/hulk_make_mfi_uci.bal -args -dirin $PWD -dirout $PWD"
+    echo `date +'%Y-%m-%d - %T'`" lancement de la commande : $balisecmd" >> $logfile
+    $balisecmd
+
+    set retour = $status
+    if ($retour == 2) set statusMailFinal = "ERREUR"
+    if ($retour == 1) set statusMailFinal = "WARN"
+    echo `date +'%Y-%m-%d - %T'`" code retour = $retour" >> $logfile
+
+	# deplacer les mfi.xml sans les valider
+	\mv *.mfi.xml $ela_liv_mfi
+
+    ## valider les uci.xml et les déplacer dans le dossier ELA_LIV/mfi/
+    ls *.uci.xml >& /dev/null
+    if ($status == 0) then
+		\rm -rf uci  >& /dev/null
+		mkdir -p uci >& /dev/null
+		\mv  *.uci.xml uci
+		pushd uci
+			## 31/12/2012 MB : Attn : avec l'ajout des atributs aux uci, les fichiers ne parseront plus
+			## en attendant, utiliser (en local seulement) gendocs_pour_uci.xsd
+			parsexml . -xsd $ELA_LIV/dtd/xml_schema/gendocs.xsd >& /dev/null
+
+			ls *.xmlerr >& /dev/null
+			if ($status == 0) then
+				set nb = `ls *.xmlerr | wc -l`
+				echo `date +'%Y-%m-%d - %T'`" ERREUR deplacement des "$nb" uci.xml invalides de $PWD vers $dir_non_valides" >> $logfile
+				foreach f (*.xmlerr)
+					set ficxml = `echo $f | sed 's/.xmlerr//g'`
+					\mv $f $ficxml $dir_non_valides
+				end
+			endif
+
+			ls *.uci.xml >& /dev/null
+			if ($status == 0) then
+				set nb = `ls *.uci.xml | wc -l`
+				echo `date +'%Y-%m-%d - %T'`" deplacement des "$nb" uci du dossier $PWD vers $ela_liv_mfi" >> $logfile
+				\mv *.uci.xml $ela_liv_mfi
+			endif
+		popd
+    endif
+popd
+echo "Generation des MFI terminee"
+if ($bstop == true) goto endcommand
+
+## ------------------------------------------------------------------------
+## 24/07/2012 AL
+## Mettre a jour les papidoc de la VP
+## ------------------------------------------------------------------------
+## 31/01/2013 AL
+## La mise à jour des papidoc vp chez jouve sera faite via la commande hukl_syncdata
+## On arrête d'appeler ici le script hulk_prepvp_prod
+## ------------------------------------------------------------------------
+#moduleVp:
+#modulePapidocVp:
+##echo `date +'%Y-%m-%d - %T'`" generation de papidoc vp" >> $logfile
+
+## /usr/local/ela/bin/hulk_prepvp_achille ## ancien script ne plus utiliser
+##/usr/local/ela/bin/hulk_prepvp -test  ## ancien script ne plus utiliser
+
+## /usr/local/ela/bin/hulk_prepvp -prod ## mis en commentaire le 31/01/213 par alazreg
+
+## 09/10/2012 AL
+## Validation des papidoc vp
+#pushd $ELA_LIV/exalead/xml/vp/
+#    echo `date +'%Y-%m-%d - %T'`" validation des xml dans le dossier $PWD" >> $logfile
+#    parsexml . $ELA_LIV/dtd/papidoc.dtd >& /dev/null
+#
+#    ## deplacement des papidoc invalides
+#    ls *.xmlerr >& /dev/null
+#    if ($status == 0) then
+#	set nb = `ls *.xmlerr | wc -l`
+#	echo `date +'%Y-%m-%d - %T'`" deplacement des "$nb" xml invalides de $PWD vers $dir_non_valides" >> $logfile
+#	foreach f (*.xmlerr)
+#	    set ficxml = `echo $f | sed 's/.xmlerr//g'`
+#	    ##echo `date +'%Y-%m-%d - %T'`" mv $f $dir_non_valides" >> $logfile
+#	    \mv $f $dir_non_valides
+#	    echo `date +'%Y-%m-%d - %T'`" $ficxml invalide" >> $logfile
+#	    \mv $ficxml $dir_non_valides
+#	end
+#    endif
+#popd
+    
+#if ($bstop == true) goto endcommand
+
+## ------------------------------------------------------------------------
+## Mettre a jour les papidoc outils
+## ------------------------------------------------------------------------
+# 14/03/2016 SF Desactiver la livraison des papidoc outils. La livraison est faites separement via le script hulk_prepoutils
+# moduleOutils:
+# mkdir -p $ELA_LIV/exalead/xml/outils >& /dev/null
+# pushd $ELA_LIV/exalead/xml/outils/
+	# set dir_tools = "/usr/local/ela/cd-rom/tools"
+	# if ($smode != "prod") then
+		# set dir_tools = "/usr/local/ela/cd-rom/tools/test"
+	# endif
+    # \cp $dir_tools/calc_papidoc_hulk.xml .
+    # \cp $dir_tools/ta_papidoc_hulk.xml .
+    # parsexml . $ELA_LIV/dtd/papidoc.dtd >& /dev/null
+    # deplacement des papidoc invalides
+    # ls *.xmlerr >& /dev/null
+    # if ($status == 0) then
+	# set nb = `ls *.xmlerr | wc -l`
+	# echo `date +'%Y-%m-%d - %T'`" deplacement des "$nb" xml invalides de $PWD vers $dir_non_valides" >> $logfile
+	# foreach f (*.xml)
+	    # if (-f $f.xmlerr) then
+		#echo `date +'%Y-%m-%d - %T'`" $f invalide" >> $logfile
+		# \mv $f $dir_non_valides
+		# \mv $f.xmlerr $dir_non_valides
+	    # endif
+	# end
+    # endif
+# popd
+if ($bstop == true) goto endcommand
+
+## ------------------------------------------------------------------------
+## Validation des PAPI doc + URX
+## ------------------------------------------------------------------------
+validationPapidocUrx:
+echo "Validation des papidoc + URX avec la dtd papidoc.dtd"
+pushd $ELA_LIV/exalead/xml
+
+    #############################################################
+    ## 05/08/2013 alazreg
+    ## Les jrp tra contiennent un element ATTillisible qui pose problème au parse du XML
+    ## A voir avec Marc VERGON pour corriger les jrp tra
+    ## je supprime cet element des XML pour eviter le probleme de parse
+    #############################################################
+    echo `date +'%Y-%m-%d - %T'`" Debut suppression de l'element ATTillisible dans le dossier $PWD" >> $logfile
+    foreach f (`grep -l '<ATTillisible>' *.xml`)
+		cat $f | sed 's/<ATTillisible>//g' >! tmp.txt
+		\mv tmp.txt $f
+    end
+    echo `date +'%Y-%m-%d - %T'`" Fin suppression de l'element ATTillisible dans le dossier $PWD" >> $logfile
+
+    parsexml . $ELA_LIV/dtd/papidoc.dtd >& /dev/null
+
+    ## 31/05/2012 AL
+    ## Armand BETTON (email 24/05/2012 17:50) ne souhaite plus recevoir le dossier ./exalead/xml/urx/
+    ## 
+    ##pushd $ELA_LIV/exalead/xml/urx/
+	##parsexml . $ELA_LIV/dtd/papidoc.dtd >& /dev/null
+    ##popd
+    ##set liste_fic_err = `ls ./*.xmlerr ./vp/*.xmlerr ./urx/*.xmlerr`
+    ls *.xmlerr >& /dev/null
+    if ($status == 0) then
+	set nb = `ls *.xmlerr | wc -l`
+	echo `date +'%Y-%m-%d - %T'`" deplacement des "$nb" xml invalides de $PWD vers $dir_non_valides" >> $logfile
+	foreach f (*.xmlerr)
+	    set ficxml = `echo $f | sed 's/.xmlerr//g'`
+	    \mv $f $dir_non_valides
+	    ##echo `date +'%Y-%m-%d - %T'`" $ficxml invalide" >> $logfile
+	    \mv $ficxml $dir_non_valides
+	end
+	set bProblemeValidation = true
+    endif
+popd
+
+
+if ($bstop == true) goto endcommand
+
+
+## ------------------------------------------------------------------------
+## Controler que les UC UCX URX sont bien crees pour les fichiers SGML
+## ------------------------------------------------------------------------
+## 26/06/2012 MB : l'étape controleCorrespondanceSgmlUc est déplacée ici 
+## car les fichiers ne sont pas encore arrivés dans ELA_LIV/uc pour faire le controle !!
+## ------------------------------------------------------------------------
+## 01/10/2012 AL :
+## je deplace ici le controle de correspondance SGML UC
+## En effet il faut comparer les sgml uniquement avec les xml valides.
+## Les xml invalides ne sont par livres
+## ------------------------------------------------------------------------
+controleCorrespondanceSgmlUc:
+set bProblemeUcAbsente = false
+echo "Controler que les UC UCX URX sont bien crees pour les fichiers SGML"
+set ficUcAbsentes = $ELA_LIV/ucabsentes.txt
+echo "uc manquantes" >! $ficUcAbsentes
+pushd $ELA_LIV/sgm
+    foreach ligne (`cat $ELA_LIV/dtdfinder.txt`)
+	set f = `echo $ligne | cut -d '.' -f1`
+	set racine = `echo $ligne | cut -d ';' -f2 | tr "A-Z" "a-z"`
+	if ($racine == "cdcoll") continue
+	## 12/07/2012 MB : remplacer dans test par $f car $racine = !DOCTYPE 
+	## if ($racine == "subscription") continue
+	if ($f == "subscription") continue
+	if ($racine == "liste") continue
+	if ($racine == "src") continue
+	if ($racine == "toc") continue
+	echo $f | grep '.tap.sgm' >& /dev/null
+	if ($status == 0) continue
+
+	echo $f | grep '_tag' >& /dev/null
+	if ($status == 0) continue
+
+	set fileuc = $ELA_LIV/uc/$f.uc.xml
+
+	if !(-f $fileuc) then
+	    set bProblemeUcAbsente = true
+	    set sujet = "HULK : traitements EL NOK ERREURS : $f"
+	    ## echo "Correspondance SGML / UC NOK : $f" 
+	    echo "Correspondance SGML / UC NOK : $f" >> $logfile
+	    set ficsgm  = `echo $ligne | cut -d ';' -f1`
+	    echo "$ficsgm" >> $ficUcAbsentes
+	endif
+    end
+
+    if ($bProblemeUcAbsente == false) then
+	echo "Correspondance SGML / UC OK" 
+	echo "Correspondance SGML / UC OK" >> $logfile
+	set sujet = "HULK : Correspondance SGML / UC OK"
+##	$sendmailcmd $destinataires -s $sujet -c "Hulk : controleCorrespondanceSgmlUc Ok"
+    else
+	echo "HULK : Erreur  Correspondance SGML / UC Ko" 
+	echo "HULK : Erreur  Correspondance SGML / UC Ko"  >> $logfile
+	set sujet = "HULK : Erreur Correspondance SGML / UC Ko"
+##	$sendmailcmd $destinataires -s $sujet -f $logfile
+    endif
+popd
+
+
+if ($bstop == true) goto endcommand
+
+
+recherche_extentions_a_supprimer:
+## ------------------------------------------------------------------------
+## Le dossier sgm doit contenir uniquement des fichiers *.sgm
+## Les dossiers xml doivent contenir uniquement des fichiers *.xml
+## Recherche des extensions autres que *.sgm *.xml
+## ------------------------------------------------------------------------
+echo "Recherche des extensions autres que *.sgm *.xml"
+pushd $ELA_LIV/
+    echo `date +'%Y-%m-%d - %T'`" recherche d'extensions de fichiers a supprimer dans $PWD" >> $logfile
+    ## Eliminer les fichiers qui n'ont pas l'extension *.sgm *.xml
+    ## Sinon probleme de validation chez JOUVE
+
+    ## 31/07/2012 AL
+    ## Pour ne pas bloquer les traitements chez jouve
+    ## on deplace tous les fichiers qui pourraient gener dans un dossier de sauvegarde
+    mkdir -p $dir_non_valides >& /dev/null
+    \mv `find sgm_entites_nums | egrep '.*\..*' | egrep -v '\.sgm$'` $dir_non_valides >& /dev/null
+    \mv `find uc | egrep '.*\..*' | egrep -v '\.xml$'` $dir_non_valides >& /dev/null
+    \mv `find mfi | egrep '.*\..*' | egrep -v '\.xml$'` $dir_non_valides >& /dev/null
+    \mv `find exalead | egrep '.*\..*' | egrep -v '\.xml$'` $dir_non_valides >& /dev/null
+
+    ## 19/09/2012 AL
+    ## Un fichier exalead/xmlutf8/#x3m# a posé problème de parse chez JOUVE
+    ## J'ajoute le cas ici
+    \mv `find exalead sgm_entites_nums uc mfi -name "*#*"` $dir_non_valides >& /dev/null
+
+    ## 03/10/2012 AL/MB
+    ## Deplacer les fichiers qui posent probleme à jouve
+    ## Par exemple les fichiers www/html/icons/*.* ne doivent pas contenir de caracteres accentués, ni espaces
+    echo "Je deplace les fichiers qui contiennent des caracteres autres que a-z A-Z 0-9 ..."
+    find $ELA_LIV/www/ -type f | grep '[^a-zA-Z0-9/._-]' >! lstToMove
+    ## 04/10/2012 MB : appel commande moveNonAsciiFileNames pour se faire
+    moveNonAsciiFileNames lstToMove $dir_non_valides
+    \rm  lstToMove
+
+    echo `find $ELA_LIV/www/ -type f | grep '[^a-zA-Z0-9/._-]' | sed 's/ /\\ /g' `  #$dir_non_valides >& /dev/null
+    #find $ELA_LIV/www/ -type f | grep '[^a-zA-Z0-9/._-]'
+    \mv `find $ELA_LIV/www/ -type f | grep '[^a-zA-Z0-9/._-]'` $dir_non_valides >& /dev/null
+popd
+
+if ($bstop == true) goto endcommand
+
+## ------------------------------------------------------------------------------
+## Traitements jouve prod
+## Bloquer l'envoi des traitements Jouve si des erreurs graves apparaissent
+## ------------------------------------------------------------------------------
+
+## 03/12/2012 al
+## mettre en place le test de popin recapnew
+## mantis 856
+
+set fic_test_popin = $ELA_LIV/testal/recapnew/recapnew.popin.htm
+if (-f $fic_test_popin) \cp $fic_test_popin $ELA_LIV/www/html/recapnew.htm
+
+## mb pour tests a decommenter +tard
+echo " Fin des traitts EL."
+
+
+
+
+trtJouve:
+## 22/02/2013 alazreg
+## si on recoit le parametre -nojouve on n'envoie pas les traitements jouve
+## cela permet de dérouler le script entier en local seulement
+
+if ($G_bTrtJouve == true && $bEnvoyerTrtJouve == true) then
+    echo `date +'%Y-%m-%d - %T'`" envoie des traitements jouve sur $smode" >> $logfile
+
+	## 03/04/2014 alazreg mantis 5974
+	# on verifie le moniteur jouve avant d'envoyer les traitements
+	$ELA_BIN/hulk_wait_for_jouve_monitor.tcsh $smode $logfile
+
+    set jouvecmd = "elsjouvetrt hulk -all -prod"
+    if ($smode == "test") set jouvecmd = "elsjouvetrt hulk -all -prod -chainetest"
+    if ($smode == "sandbox1") set jouvecmd = "elsjouvetrt hulk -all -prod -sandbox1"
+    if ($smode == "sandbox4") set jouvecmd = "elsjouvetrt hulk -all -prod -sandbox4"
+
+    echo `date +'%Y-%m-%d - %T'`" envoie de la commande $jouvecmd" >> $logfile
+    $jouvecmd
+    set retour = $status
+    if ($retour != 0) set statusMailFinal = "ERREUR_WARN"
+    echo `date +'%Y-%m-%d - %T'`" code retour = $retour" >> $logfile
+    echo `date +'%Y-%m-%d - %T'`" envoie des traitements jouve terminé" >> $logfile
+endif
+
+
+if ($bstop == true) goto endcommand
+
+
+
+## ------------------------------------------------------------------------
+## Compter le nombre de fichiers sgm xml
+## ------------------------------------------------------------------------
+comptage:
+
+## --------------------------------------------------------------------
+## 11/02/2013 AL
+## Créer un fichier csv sur mac.public pour pouvoir le récupérer facilement sur excel sous windows
+## --------------------------------------------------------------------
+set csvdir = /mac.public/hulk/rapport
+mkdir -p $csvdir >& /dev/null
+##set csvfile = $csvdir/hulkliv_${smode}_${dateprod}.csv
+set csvfile = $csvdir/hulkliv_${smode}_${dateprod}.htm
+\rm -f $csvfile >& /dev/null
+touch $csvfile
+
+
+echo "Comptage des fichiers livrés à jouve"
+
+    echo '<html><head><title>Fichiers livr&eacute;s</title></head><body><table border="1">' >> $csvfile
+
+    echo "<tr><td>plate-forme</td><td>$smode</td></tr>" >> $csvfile
+    echo "<tr><td>date</td><td>`date +'%d/%m/%Y %H:%M'`</td></tr>" >> $csvfile
+    echo "<tr><td>user</td><td>$user</td></tr>" >> $csvfile
+    echo "<tr><td>commande</td><td>$0 $*</td></tr>" >> $csvfile
+    echo "<tr><td>liste des matieres</td><td>$liste_mat</td></tr>" >> $csvfile
+    ##echo "<tr><td>hulkliv heure lancement</td><td>`date +'%d/%m/%Y %H:%M'`" >> $csvfile
+
+pushd $ELA_LIV/
+
+    pushd $ELA_LIV/sgm_entites_nums
+	echo "<tr><td>comptage (body|optj).sgm</td><td>"`ls *.sgm | egrep '(body|optj).sgm'   | wc -l`"</td></tr>" >> $csvfile
+	echo "<tr><td>comptage TYPEOUVRAGE</td><td>"`grep -il 'typeouvrage=' *.body.sgm *.optj.sgm| wc -l`"</td></tr>" >> $csvfile
+	echo "<tr><td>comptage FDOC</td><td>"`grep -il 'fdoc' *.sgm | wc -l`"</td></tr>" >> $csvfile
+	echo "<tr><td>comptage toc.sgm</td><td>"`ls *toc.sgm | wc -l`"</td></tr>" >> $csvfile
+	echo "<tr><td>comptage form optj</td><td>"`ls [a-z][0-9]m[0-9]*.optj.sgm  | wc -l`"</td></tr>" >> $csvfile
+	echo "<tr><td>comptage fp optj</td><td>"`ls [a-z][0-9]f*.optj.sgm  | grep -v 'fpro' | wc -l`"</td></tr>" >> $csvfile
+	echo "<tr><td>comptage fpro optj</td><td>"`ls [a-z][0-9]fpro*.optj.sgm  | wc -l`"</td></tr>" >> $csvfile
+	echo "<tr><td>comptage qr optj</td><td>"`ls [a-z][0-9]q*.optj.sgm  | wc -l`"</td></tr>" >> $csvfile
+	echo "<tr><td>comptage ccol optj</td><td>"`ls ?p??_oc* ?p??_cc* oc* cc[0-9]* | grep '.optj.sgm'  | wc -l`"</td></tr>" >> $csvfile
+	echo "<tr><td>comptage jrpbloc optj</td><td>"`ls *jrpbloc*.optj.sgm  | wc -l`"</td></tr>" >> $csvfile
+	echo "<tr><td>comptage txtbloc optj</td><td>"`ls *txtbloc*.optj.sgm  | wc -l`"</td></tr>" >> $csvfile
+	echo "<tr><td>comptage txtantbloc optj</td><td>"`ls *txtantbloc*.optj.sgm  | wc -l`"</td></tr>" >> $csvfile
+    popd
+    echo "<tr><td>comptage uc</td><td>"`ls uc/*.uc.xml | wc -l`"</td></tr>" >> $csvfile
+    echo "<tr><td>comptage uc form</td><td>"`ls uc/[a-z][0-9]m*.uc.xml | wc -l`"</td></tr>" >> $csvfile
+    echo "<tr><td>comptage ucx</td><td>"`ls uc/*.ucx.xml | wc -l`"</td></tr>" >> $csvfile
+    echo "<tr><td>comptage uci</td><td>"`ls mfi/*.uci.xml | wc -l`"</td></tr>" >> $csvfile
+    echo "<tr><td>comptage mfi</td><td>"`ls mfi/*.mfi.xml | wc -l`"</td></tr>" >> $csvfile
+    echo "<tr><td>comptage urf</td><td>"`ls urf/*.urf.xml | wc -l`"</td></tr>" >> $csvfile
+
+    echo "<tr><td>comptage urx exalead/xml/</td><td>"`ls exalead/xml/*.urx.xml | wc -l`"</td></tr>" >> $csvfile
+    echo "<tr><td>comptage papidoc ur exalead/xml/ sans urx</td><td>"`ls exalead/xml/*.xml | grep -v 'urx.xml' | wc -l`"</td></tr>" >> $csvfile
+    echo "<tr><td>comptage papidoc vp exalead/xml/vp/</td><td>"`ls exalead/xml/vp/*.xml | wc -l`"</td></tr>" >> $csvfile
+    echo "<tr><td>comptage papidoc outils exalead/xml/outils/</td><td>"`ls exalead/xml/outils/*.xml | wc -l`"</td></tr>" >> $csvfile
+    echo "<tr><td>comptage form interactives xml</td><td>"`ls xml/*optj.sgm.tmp.xml | wc -l`"</td></tr>" >> $csvfile
+    echo "<tr><td>poids sgm_entites_nums</td><td>"`du -sh sgm_entites_nums|cut -f1`"</td></tr>" >> $csvfile
+popd
+    echo "<tr><td>trt jouve commande</td><td>$jouvecmd</td></tr>" >> $csvfile
+
+    echo "<tr><td>hulkliv date lancement</td><td>$hulkliv_date_lancement</td></tr>" >> $csvfile
+    echo "<tr><td>hulkliv date fin</td><td>`date +'%d/%m/%Y %H:%M'`</td></tr>" >> $csvfile
+
+    echo "<tr><td>trt jouve date lancement</td><td>`date +'%d/%m/%Y %H:%M'`</td></tr>" >> $csvfile
+    echo "<tr><td>trt jouve date fin</td><td>&nbsp;</td></tr>" >> $csvfile
+
+    echo "<tr><td>workflow date lancement</td><td></td></tr>" >> $csvfile
+    echo "<tr><td>workflow date fin</td><td>&nbsp;</td></tr>" >> $csvfile
+
+    ## prévoir une ligne pour les totaux des durées de traitements
+    echo "<tr><td>&nbsp;</td><td>&nbsp;</td></tr>" >> $csvfile
+    echo "<tr><td>hulkliv durée</td><td>sur excel =(fin-debut)*24</td></tr>" >> $csvfile
+    echo "<tr><td>trt jouve durée</td><td>sur excel =(fin-debut)*24</td></tr>" >> $csvfile
+    echo "<tr><td>workflow durée</td><td>sur excel =(fin-debut)*24</td></tr>" >> $csvfile
+
+    echo "</table></body></html>" >> $csvfile
+
+
+    echo "Consulter le fichier csv  $csvfile"
+    echo "Consulter le fichier csv  $csvfile" >> $logfile
+
+
+if ($bstop == true) goto endcommand
+
+
+copie_archive:
+if ($barchive == true) then
+    pushd $ELA_LIV
+	echo "Archivage de $ELA_LIV vers $ELA_LIV/archive/lastfullmaj"
+	set ela_liv_archive_lastfullmaj = $ELA_LIV/archive/lastfullmaj
+	mkdir -p $ela_liv_archive_lastfullmaj >& /dev/null
+		foreach d (sgm/ sgm_entites_nums/ uc/ mfi/ urf/ www/ xml/)
+	    echo "Archivage de $ELA_LIV/$d vers $ELA_LIV/archive/lastfullmaj"
+			# 24/02/2014 alazreg
+			# utilisation de rsync au lieu de cp pour synchroniser uniquement les fichiers nouveaux ou modifies
+			# voir http://fr.openclassrooms.com/informatique/cours/reprenez-le-controle-a-l-aide-de-linux/rsync-synchroniser-des-fichiers-pour-une-sauvegarde
+			# rsync options  :
+			# rsync dossier_source/ dossier_cible/
+			# -a : conserve toutes les informations sur les fichiers, comme les droits (chmod), la date de modification, etc. ;
+			# -r : sauvegarde aussi tous les sous-dossiers qui se trouvent dans le dossier à sauvegarder ;
+			# -v : mode verbeux, affiche des informations détaillées sur la copie en cours.
+
+			# \cp -r $d $ela_liv_archive_lastfullmaj
+			rsync -arz $d/ $ela_liv_archive_lastfullmaj/$d/ >& /dev/null
+			
+	end
+
+	## 13/06/2013 alazreg
+	## archiver les version de cdcoll.sgm
+	pushd $ela_liv_archive_lastfullmaj/sgm_entites_nums
+	    \cp cdcoll.sgm cdcoll.sgm.svg_`date +'%Y%m%d-%H%M%S'`
+	popd
+
+	## 13/06/2013 alazreg
+	## pour gagner un peu de place sur le disque prendre seulement le dossier ./exalead/xmlutf8/
+	mkdir -p $ela_liv_archive_lastfullmaj/exalead/ >& /dev/null
+	echo "Archivage de $ELA_LIV/exalead/xmlutf8/ vers $ELA_LIV/archive/lastfullmaj/exalead"
+
+		# 24/02/2014 alazreg
+		# utilisation de rsync au lieu de cp pour synchroniser uniquement les fichiers nouveaux ou modifies
+		# \cp -r exalead/xmlutf8/ $ela_liv_archive_lastfullmaj/exalead/
+		rsync -arz exalead/xmlutf8/ $ela_liv_archive_lastfullmaj/exalead/xmlutf8/ >& /dev/null
+
+	## modifier les droits pour pouvoir ecraser certains fichiers
+	## cp: cannot create regular file `/usr/local/ela/cd-rom/hulk/livtest/archive/lastfullmaj/www/html/icons/msgOptionnelDocId-AL26redac26.htm': Permission denied
+		# chmod -R a+w $ELA_LIV/archive/lastfullmaj/www/html >& /dev/null
+		# chmod -R 776 $ELA_LIV/archive/lastfullmaj/www/html >& /dev/null
+		echo "chmod -R 777 $ELA_LIV/archive/lastfullmaj en cours"
+		chmod -R 777 $ELA_LIV/archive/lastfullmaj >& /dev/null
+		echo "chmod -R 777 $ELA_LIV/archive/lastfullmaj termine"
+    popd
+endif
+
+if ($bstop == true) goto endcommand
+
+make_referentiel_docs_el:
+# if ($smode != "prod") /usr/local/ela/bin/hulk_referentiel_push.tcsh $smode $s_alltxt $s_alljrp
+/usr/local/ela/bin/hulk_referentiel_push.tcsh $smode $s_alltxt $s_alljrp
+
+if ($bstop == true) goto endcommand
+
+## ------------------------------------------------------------------------------
+## Envoi d'un email au poletech + cdp
+## ------------------------------------------------------------------------------
+endcommand:
+    set sujet = "HULK : fin traitements EL "$statusMailFinal
+    ##echo "HULK : les etapes EL sont "$statusMailFinal >> $logfile
+
+	## YE 30/01/2014 Mantis 4380	
+	set dirdateLancement = $ELA_LIV/dateLancement
+	mkdir -p $dirdateLancement >& /dev/null
+
+	pushd $dirdateLancement	
+		echo "La liste des matieres $liste_mat"
+		echo "$hulkliv_date_lancement_jrp" >! $PWD/hulkliv.txt		
+			# YE 04/06/2014 Ne pas creer de fichier dpxx.txt.
+			# foreach dp ($liste_mat) 	
+					# echo "le chemin est $dp"
+					# echo "$dp" | egrep '[d|g|l]p[0-9][0-9]'
+					# if $status == 0	then 
+						# echo "$hulkliv_date_lancement_jrp" >! $PWD/$dp.txt							
+					# endif				
+			# end			
+	popd
+
+packope:
+	
+	# 15/02/2016 SF ajout Pack ope
+	if ("$liste_mat" != "") then
+		echo ""
+		echo "--------------------------------"
+		echo "MAJ du referentiel des packs ope"
+		echo "--------------------------------"
+		# set G_fileXlsPacks = "/mac.public/sfouzi/Pack_ope_v1.xls"
+		set G_fileXlsPacks = "/redaction/Packope/Pack_ope.xls"
+		set G_fileXmlPacks = "$ELA_LIV/packOpe/packOpeRef.xml"
+		java -jar $ELA_SRC_GEN/java/PackOpeRef/jar/PackOpeRef.jar $G_fileXlsPacks $G_fileXmlPacks
+		
+		balise -src $ELA_SRC_GEN/majmapMatFromPacks.bal -args -ref $G_fileXmlPacks
+		if ($status == 0) then
+			set listMatWithPackOpeDocs = ""
+			
+			foreach dp ($liste_mat) 
+				grep -i $dp $ELA_TMP_IDX/packsByMatiere.txt >& /dev/null
+				if ($status == 0) then
+					set listMatWithPackOpeDocs = "$listMatWithPackOpeDocs$dp "
+				endif
+			end
+			
+			
+			if ($listMatWithPackOpeDocs != "") then
+				echo "Les produits suivants contiennent des documents appartenant au pack ope : $listMatWithPackOpeDocs"
+				echo "Il faut mettre a jour les packs dependant de ces produits."
+				echo "Consulter le fichier suivant pour connaitre les packs a livrer : $ELA_TMP_IDX/packsByMatiere.txt"
+				
+				echo "[--- Ceci est un mail automatique ---]\n\n---------------------------------------------------------------------------------------------\n\nLes produits suivants contiennent des documents appartenant au pack ope :\n$listMatWithPackOpeDocs\n\nIl faut mettre a jour les packs dependant de ces produits.\nConsulter le fichier de reference ci-joint pour connaitre les packs a livrer.\n\n---------------------------------------------------------------------------------------------\n\nPour rappel, la commande de livraison des packs est la suivante :\npackopeliv -prod|-test|-sandbox1 -pack <listes_des_packs>\n\nExemple :\npackopeliv -$smode -pack P01 P03 P06" | mutt -s "PACK OPE : Livraison pack" -a $ELA_TMP_IDX/packsByMatiere.txt -- $user@editions-legislatives.fr cchareau@editions-legislatives.fr sbouret@editions-legislatives.fr cnock@editions-legislatives.fr jdfavre@editions-legislatives.fr s.fouzi-ext@lefebvre-sarrut.eu 
+			endif
+		endif
+	endif
+
+	#fin Modif YE 
+
+    ## ------------------------------------------------------------------------
+    ## 05/07/2013 alazreg
+    ## liberer le verrou
+    ## ------------------------------------------------------------------------
+    ##elsunlock hulkliv_$smode
+	if ($b_jai_pose_le_verrou == true) then
+		echo "debug rm $lockpath"
+		\rm $lockpath
+	endif
+    ##$sendmailcmd $destinataires -s $sujet -f $logfile
+    $sendmailcmd $destinataires -s $sujet -c "Consulter le fichier de log "$logfile
+    echo "Consulter le fichier de log "$logfile
+    echo "FIN du script hulkliv"
+    echo `date +'%Y-%m-%d - %T'`" FIN du script hulkliv" >> $logfile
+	
+    if ($statusMailFinal == "OK" ) then
+	exit 0
+    else
+	exit 1
+    endif
+
+intrdefault:
+	/usr/local/ela/bin/cmdlog.tcsh $0 interruption Ctrl C $*
+	# Libérer les verrous
+	foreach v ($liste_verrous)
+		echo debug suppression de elsunlock $v hulkliv
+		elsunlock $v hulkliv
+	end
+	
+	# Libérer le verrou hulkliv
+	# /usr/local/ela/bin/elsunlock $lockpath
+	if ($b_jai_pose_le_verrou == true) then
+		\rm $lockpath
+		echo debug suppression de $lockpath
+	endif
+
+	set basename0 = `basename $0`
+    $sendmailcmd $destinataires -s $basename0 ": interruption Ctrl +c" -c "Interruption de la commande "$basename0" par "$user". Libération du verrou "$lockpath
+	exit 2
+
+## ------------------------------------------------------------------------------
+## Prevoir ici une aide pour le script
+## Appel : hulkliv <help|-help|h|-h>
+## Je place ici l'aide apres le exit de endcommand
+## De cette maniere le script lancé normalement va s'arreter avant d'afficher l'aide
+## ------------------------------------------------------------------------------
+help:
+echo "----------------------------------------"
+echo "Vous avez demandé l'aide du script $0"
+echo "----------------------------------------"
+echo ""
+echo "Syntaxe 1 : $0 dossier_sgm [etape [stop]]"
+echo "dossier_sgm = dossier qui cntient des fichiers sgm"
+echo "etape : optionnel pour lancer le script a partir de l'etape"
+echo "stop : optionnel flag pour indiquer au script de s'arreter apres l'etape donnee en parametre"
+echo "----------------------------------------"
+echo "Exemple d'appel :"
+echo "$0 $ELA_LIV/sgm transcodeFSHTMLP stop"
+echo "----------------------------------------"
+echo ""
+
+exit 0
+
+
