@@ -1,0 +1,647 @@
+#!/usr/local/bin/tcsh
+# ------------------------------------------------------------------
+# Auteur : Ahmed LAZREG
+# Date	 : 06/11/2012
+#
+# Ce script prepare les papidoc ACTUEL pour HULK
+#
+# ------------------------------------------------------------------
+# 11/12/2012 YTR : modif diverses (gestion de ligne de commande, commentaires)
+#                  prise en compte du nouveau dossier $ELA_LIV/actuel et appel du hulk_syncdata actuel
+# ------------------------------------------------------------------
+# 26/03/2013 YTR : ajout d'un rapport mail en fin de script
+# ------------------------------------------------------------------
+# 04/04/2013 YTR : on accepte la syntaxe -prod|prod ou -test|test
+# ------------------------------------------------------------------
+# 27/06/2013 YTR : en test, on traite tous les actuels
+# ------------------------------------------------------------------
+# 24/09/2013 MB : ajout post-traitt pour cas SCORE/VPOLD
+# 03/07/2014 YE/MB : patch de la zapette des actuel TSA : modifier ../../Actuel/../... par ../../TSA/../..
+# ------------------------------------------------------------------
+
+unalias cp
+unalias rm
+set sendmailcmd = "/usr/local/ela/bin/sendmaildpm"
+
+
+# -----------------------------------------------------------------------------------------
+## Positionner l'environnement HULK
+# -----------------------------------------------------------------------------------------
+source /usr/local/ela/bin/hulk.csh
+
+# -----------------------------------------------------------------------------------------
+## Gestion de la ligne de commande 
+# -----------------------------------------------------------------------------------------
+
+if ( "$1" == "help" || "$1" == "-help" || $# > 2 || ( "$1" != "-prod" && "$1" != "-test"  && "$1" != "prod"  && "$1" != "test"  && "$1" != "sbox1" && "$1" != "-sbox1" && "$1" != "sandbox1" && "$1" != "-sandbox1" && "$1" != "sbox4" && "$1" != "-sbox4" && "$1" != "sandbox4" && "$1" != "-sandbox4" ) ) then
+    echo ""
+    echo "Syntaxe : hulk_prepactuel -prod|-test|-sbox1|-sbox4"
+    echo ""
+    echo "paramètres : "
+    echo "aide : lance la synchro des aides HTML"
+    echo "-prod : vise le workflow de prod"
+    echo "-test : vise le workflow de test "
+    echo "-sbox1 : vise le workflow de sbox1 "
+	echo "-sbox4 : vise le workflow de sbox4 "
+    echo ""
+    exit 2
+endif
+
+# -----------------------------------------------------------------------------------------
+set argTargetPlatform = $1
+if ( "$argTargetPlatform" == "-test" || "$argTargetPlatform" == "test" ) then
+    set bProdMode = "test"
+    set actuelLivDir = ${ELA_LIVTEST}/actuel/actueldata
+	set actuelDeliveryDir = ${ELA_LIVTEST}/actuel
+    set actuelLivDirArchive = ${ELA_LIVTEST}/actuel/ArchiveActueldata
+endif
+
+if ( "$argTargetPlatform" == "-prod" || "$argTargetPlatform" == "prod" ) then
+    set bProdMode = "prod"
+    set actuelLivDir = ${ELA_LIV}/actuel/actueldata  
+	set actuelDeliveryDir = ${ELA_LIV}/actuel
+    set actuelLivDirArchive = ${ELA_LIV}/actuel/ArchiveActueldata   
+endif
+
+if ( "$argTargetPlatform" == "-sbox1" || "$argTargetPlatform" == "sbox1" ) then
+    set bProdMode = "sbox1"
+    set actuelLivDir = ${ELA_SANDBOX1}/actuel/actueldata
+	set actuelDeliveryDir = ${ELA_SANDBOX1}/actuel
+    set actuelLivDirArchive = ${ELA_SANDBOX1}/actuel/ArchiveActueldata   
+endif
+
+if ( "$argTargetPlatform" == "-sbox4" || "$argTargetPlatform" == "sbox4" ) then
+    set bProdMode = "sbox4"
+    set actuelLivDir = ${ELA_SANDBOX4}/actuel/actueldata
+	set actuelDeliveryDir = ${ELA_SANDBOX4}/actuel
+    set actuelLivDirArchive = ${ELA_SANDBOX4}/actuel/ArchiveActueldata   
+endif
+
+echo ""
+echo "actuelDeliveryDir = $actuelDeliveryDir plateforme = $bProdMode"
+
+
+#$sendmailcmd ytruchot -s "hulk_prepactuel $bProdMode : debut" -c "allez hop c'est parti! "
+
+# -----------------------------------------------------------------------------------------
+
+mkdir -p $actuelLivDir >& /dev/null
+mkdir -p $actuelLivDirArchive >& /dev/null
+
+## Supprimer les papidoc actuel précédents
+\mv $actuelLivDir/* $actuelLivDirArchive >& /dev/null
+
+##goto supprBalisesHTML
+
+
+# -----------------------------------------------------------------------------------------
+
+## Récupérer les ACTUEL déjà encodées en UTF-8
+## Récupérer l'historique des papidoc ACTUEL
+## Pour l'historique => 1 fichier xml = plusieurs articles ACTUEL
+##set dir_papidoc_source = /mac.public/hulk/actuel
+
+## 29/11/2012 AL
+## passage en prod
+## on indique le dossier sur lequel cemagid (comptanoo) va déposer le fichier xml par ftp
+set dir_papidoc_source = /prodsources/hulk
+
+echo "Etape copie de $dir_papidoc_source vers $actuelLivDir"
+
+## 27/06/2013 YTR : sur test on embarque désormais tous les actuels (et si ok on fera de même en prod en vue de la mise en prod des portails EC et CE)
+if ( $bProdMode == "test" || $bProdMode == "sbox1" ) then
+		
+   
+
+   	#####
+	##	14/03/2017 MB : REMARQUE GLOBALE : AVEC LA NOUVELLE LIVRAISON EN INCREMENTAL, UNE BONNE PARTIE DES PATCHs 
+	##                  FAITS DANS CE SCRIPT NE DEVRAIENT PLUS ETRE NECESSAIRES 	
+	##                  ==> PREVOIR (AVEC LE PILOTE) DE REVOIR COMPLETEMENT CE SCRIPT POUR "BYPASSER" LES ETAPES INUTILES
+	#####
+
+	###
+	#  14/03/2017 MB : Attn. : avec la livraison incrementale, les URs ActuEL peuvent être vides (ne parsent pas)
+	#                  ==> ignorer les URdes ou qui ne parsent pas
+	#                  ==> faire pareil pour la prod
+	#		Etapes ajoutees :
+	#				1. Parse des URs ActuEl livrés dans $dir_papidoc_source/*.xml :"
+	#				2. Ignorer les fichiers qui ne parsent pas ==> CETTE ETAPE EST DEPLACEE PLUS LOIN DANS CE SCRIPT (APRES LES POST-TRAITTs)
+	#				3. Ignorer les fichiers sans UR (delta = 0):
+	###
+	pushd $dir_papidoc_source/test
+		mkdir -p vides  >& /dev/null
+		\rm -rf  vides/*  >& /dev/null
+		echo "\t/////////////////////////////////////////////////////////////////////////"
+		echo "\t3. Ignorer les fichiers sans UR :"
+		echo "\t/////////////////////////////////////////////////////////////////////////"
+		echo "pwd= $PWD"
+		ls *.xml #>& /dev/null		
+		foreach f (*.xml)
+			grep -Pio '(<PAPI_document uri=)' $f >& /dev/null
+			if ($status != 0) then
+				mv $f* vides/  >& /dev/null
+				echo "$f ==> fichier vide. fichier deplace dans $dir_papidoc_source/vides/."
+			else
+				echo "$f Ok"
+			endif
+		end
+	popd
+	
+	##pour le test : \cp -f $dir_papidoc_source/*.xml $actuelLivDir
+    echo "copie des actuel : $dir_papidoc_source/*.xml --> $actuelLivDir"
+	
+   
+	\cp -f $dir_papidoc_source/test/*-TSA.xml $actuelLivDir
+	# YE le 27/08/2015 
+	# \cp -f $dir_papidoc_source/*hse.xml $actuelLivDir
+	
+	# Il faut bien prendre celui de test 
+	#YE le 17/03/2015 Desactiver RJ et HSE pour correction 
+	# YE 26/10/2015 desactive RJ --> probleme erreur "<" 
+	 \cp -f $dir_papidoc_source/test/*-RJ.xml $actuelLivDir
+
+	# \cp -f $dir_papidoc_source/test/*-HSE.xml $actuelLivDir	
+	### 04/05/2015 SF / MB : ajout en test nouveaux HSE NPA : HSEE (env) + HSEF (full) + HSES (securite)
+	###                      Attn. : ajouter en prod le moment venu
+	\cp -f $dir_papidoc_source/test/*-HSE[EFS].xml $actuelLivDir	
+	\cp -f $dir_papidoc_source/test/*-HSE.xml $actuelLivDir
+	
+	\cp -f $dir_papidoc_source/test/actuEL-RH.xml $actuelLivDir
+	\cp -f $dir_papidoc_source/test/*-CE.xml $actuelLivDir
+	\cp -f $dir_papidoc_source/test/*-EC.xml $actuelLivDir
+	
+
+		#####						#####
+		##                     PROD			   ##
+		#####						#####
+	
+else	
+    ## 11/01/2013 MB : prendre que le fichier RH pour le moment
+    # echo "   seuls les fichiers *rh*.xml sont pris en compte "
+	# YE le 31/03/2015
+    # \cp -f $dir_papidoc_source/*rh*.xml $actuelLivDir
+	
+	###
+	#  14/03/2017 MB : Attn. : avec la livraison incrementale, les URs ActuEL peuvent être vides (ne parsent pas)
+	#                  ==> ignorer les URdes ou qui ne parsent pas
+	#                  ==> faire pareil pour la prod
+	#		Etapes ajoutees :
+	#				1. Parse des URs ActuEl livrés dans $dir_papidoc_source/*.xml :"
+	#				2. Ignorer les fichiers qui ne parsent pas :
+	#				3. Ignorer les fichiers sans UR (delta = 0):
+	###
+	pushd $dir_papidoc_source
+		mkdir -p vides  >& /dev/null
+		\rm -rf  vides/*  >& /dev/null
+		echo "\t/////////////////////////////////////////////////////////////////////////"
+		echo "\t3. Ignorer les fichiers sans UR :"
+		echo "\t/////////////////////////////////////////////////////////////////////////"
+		echo "pwd= $PWD"
+		ls *.xml #>& /dev/null		
+		foreach f (*.xml)
+			grep -Pio '(<PAPI_document uri=)' $f >& /dev/null
+			if ($status != 0) then
+				mv $f* vides/  >& /dev/null
+				echo "$f ==> fichier vide. fichier deplace dans $dir_papidoc_source/vides/."
+			else
+				echo "$f Ok"
+			endif
+		end
+	popd
+	
+	
+	echo "cp -f $dir_papidoc_source/*-(RH|CE|EC..).xml $actuelLivDir"
+	\cp -f $dir_papidoc_source/*-RH.xml $actuelLivDir
+	
+    ## 24/09/2013 MB : traiter aussi CE et EC en prod
+    # \cp -f $dir_papidoc_source/*CE.xml $actuelLivDir
+	
+	\cp -f $dir_papidoc_source/*-CE.xml $actuelLivDir
+	\cp -f $dir_papidoc_source/*-EC.xml $actuelLivDir	
+	
+	## 26/06/204 Mantis 7679
+	## Activation de la TSA en prod 
+	## 30/01/2015 VB / MB : en avant toute pour HSE en prod 
+	## a modifier le 02/02/2015 avec l'arrivee de HSE NPA
+	
+	 \cp -f $dir_papidoc_source/*-HSE.xml $actuelLivDir
+	
+	# YE Le 08/06/2015 
+	# Activation en prod des nouveaux HSE NPA : HSEE (env) + HSEF (full) + HSES (securite)
+	# On ne copie les fichiers que s'ils existent :)	
+	ll $dir_papidoc_source/*-HSE[EFS].xml >& /dev/null
+	if ($status == 0)  then
+		 \cp -f $dir_papidoc_source/*-HSE[EFS].xml $actuelLivDir		
+	endif	
+	# FS 11/02/2016 Activation du flux NPA pour TSA
+	# \cp -f $dir_papidoc_source/TSA.xml $actuelLivDir
+	
+	\cp -f $dir_papidoc_source/*-TSA.xml $actuelLivDir
+	
+	# YE Le 16/09/2014
+	# Activation des papi RJ en prod 
+	
+	 \cp -f $dir_papidoc_source/*-RJ.xml $actuelLivDir
+endif
+
+# -----------------------------------------------------------------------------------------
+## On corrige ici quelque erreurs de saisie
+## type_ouvrage-id => type-ouvrage-id (avec tiret)
+#echo "Etape corrections diverses"
+
+## 11/01/2013 MB : le script est trop lent ==> ce type d'erreur doit etre corrigé en amont
+## on remet la boucle en attendant de prendre le tps de revoir ce qui est redondant/faisable dans le perl
+pushd $actuelLivDir
+    foreach f (*.xml)
+		# 18/05/2016 alazreg mantis 13431 ajouter meta date-edito-since
+		# on copie la valeur de ur-tri dans date-edito-since
+		# utilisation de la commande system sed
+		cat $f | sed -r 's;<PAPI_meta name="ur-tri">([0-9]+)</PAPI_meta>;<PAPI_meta name="ur-tri">\1</PAPI_meta><PAPI_meta name="date-edito-since">\1</PAPI_meta>;g' >! toto.xml
+		\mv toto.xml $f
+		
+		## 07/03/2013 MB : ajout traitement des thematiques
+		## 30/01/2015 MB : vu avec Youness, on desactive le replaceThema pour RJ et HSE car inutile
+		## 04/05/2015 SF : on desactive le replaceThema pour les nouveaux HSE NPA : HSEE (env) + HSEF (full) + HSES (securite)
+		# if ($f != "actuEL-RJ.xml" && $f != "actuEL-HSE.xml" && $f != "actuEL-RH.xml") then 
+		if ($f != "actuEL-RJ.xml" && $f != "actuEL-HSE.xml" && $f != "actuEL-HSEE.xml" && $f != "actuEL-HSEF.xml" && $f != "actuEL-HSES.xml" && $f != "actuEL-RH.xml" && $f != "actuEL-CE.xml" && $f != "actuEL-EC.xml") then 
+		    echo "remplacement des meta actuEL par les thematiques Hulk pour : $f "
+		    /usr/local/ela/bin/hulk_actuelReplaceThema $f
+		endif
+		renamefiles .xml.thema .xml >& /dev/null
+		
+		# echo "Ok"
+		#	cat $f | sed 's/type_ouvrage-id/type-ouvrage-id/g' | sed 's/&lt;/</g' | sed 's/&gt;/>/g' >! $f.tmp
+		# YE/FS le 23/11/2015
+		if ($f != "actuEL-RJ.xml") then 
+			cat $f | sed 's/&lt;/</g' | sed 's/&gt;/>/g' >! $f.tmp
+			\mv $f.tmp $f
+		endif 
+		#	## j'ai constate dans certains fichiers *.xml des entites HTML &amp;entite; mal transcodees
+		#	## prevoir de les remplacer plus tard
+		#	## exemple : &amp;agrave; 5 km
+		#	##
+		#	cat $f | sed 's/type_ouvrage-id/type-ouvrage-id/g' | sed 's/&lt;/</g' | sed 's/&gt;/>/g' | sed 's/&amp;([a-zA-Z]+);/&\1;/g' >! $f.tmp
+		#	\mv $f.tmp $f
+    end
+
+    # echo "2eme boucle pour &lt; ==> < et &gt; ==> > "
+
+    # foreach f (*.xml)
+		#	cat $f | sed 's/type_ouvrage-id/type-ouvrage-id/g' | sed 's/&lt;/</g' | sed 's/&gt;/>/g' >! $f.tmp
+		# cat $f | sed 's/&lt;/</g' | sed 's/&gt;/>/g' >! $f.tmp
+		# \mv $f.tmp $f
+			
+		#	## j'ai constate dans certains fichiers *.xml des entites HTML &amp;entite; mal transcodees
+		#	## prevoir de les remplacer plus tard
+		#	## exemple : &amp;agrave; 5 km
+		#	##
+		#	cat $f | sed 's/type_ouvrage-id/type-ouvrage-id/g' | sed 's/&lt;/</g' | sed 's/&gt;/>/g' | sed 's/&amp;([a-zA-Z]+);/&\1;/g' >! $f.tmp
+		#	\mv $f.tmp $f	
+    # end
+popd
+
+# if ($user == "alazreg") then
+	# echo debug exit avant la fin
+	# exit 0
+# endif
+
+
+# -----------------------------------------------------------------------------------------
+supprBalisesHTML:
+## Supprimer les balises HTML des ACTUEL
+echo "********************************************"
+echo "Etape supprimer les balises HTML des ACTUEL"
+echo "********************************************"
+pushd $actuelLivDir
+    # ls *.xml >& /dev/null
+    ls *.xml 
+	
+    if ($status == 0) then
+	    foreach f (*.xml)
+
+			## 16/11/2012 al
+			## on remplace les espaces multiples par un seul espace
+			## pour faciliter le remplacement des balises html par la suite
+			
+			## 11/01/2013 mb : pour optimiser les tps de trtt, on transfère le traitement suivant 
+			## dans le script perl : hulk_epure_xml_actuel.pl et patch2XmlVP appelé juste après
+			## pas le tps de faire des tests ==> on le remet en attendant ...
+			cat $f | sed -e 's/  */ /g' >! $f.out
+			\mv $f.out $f
+			
+			## 11/01/2013 mb : ce script est peut etre redondant ==> à tester
+			##/usr/local/ela/bin/hulk_epure_xml.pl $f
+			#/usr/local/ela/bin/hulk_epure_xml_actuel.pl $f 
+			##/usr/local/ela/bin/hulk_epure_xml_lt_gt.pl $f
+			
+			## YE le 08/07/2014 
+			## remplacer  "&lt; " par < 
+			cat $f | sed 's/< /\&lt; /g' >! $f.out 
+			\mv $f.out $f
+	    end
+	    ## 11/01/2013 mb : ce script est peut etre redondant ==> à tester
+	    ## a decommenter si appel script precedent est reactive
+	    # renamefiles .xmlres .xml
+		
+		
+	    ## 09/10/2012 MB : on applique le 2ème script
+		echo "****************************" 
+		echo "patch2Xml fulltext-type2 en cours ...."
+		echo "****************************" 
+	    foreach f (*.xml)
+			/usr/local/ela/bin/patch2XmlActuel $f
+	    end
+	    renamefiles .xmlres.xml .xml >& /dev/null
+		
+		## YE Mantis 7857 le 08/07/2014
+		if (-f TSA.xml) then
+			cat TSA.xml | sed 's/<[PIBA]>//g' | sed 's/<\/[PIBA]>//g' | sed -e 's/<[PIBA] [^>]*>//g' > !  TSA.xml.tmp
+			\mv TSA.xml.tmp TSA.xml
+		endif
+		
+	    echo "DEBUG : ls*.xml"
+	    ls *.xml 
+	    ## 15/11/2012 AL 
+	    ## on corrige les "< chiffres" en "&lt; chiffres"
+	    foreach f (*.xml)
+			cat $f | sed -e 's/<\([0-9]\)/\&#60;\1/g' >! $f.out
+			\mv $f.out $f
+	    end
+		
+	    ## 10/10/2012 alazreg
+	    ## suppression de la meta de debug zapette/test/el
+	    #    foreach f (*.xml)
+	    #	    cat $f | sed 's;<PAPI_meta name="classement">ZAPETTE/TEST/EL</PAPI_meta>;;g' >! $f.out
+	    #    end
+		
+	    #    renamefiles .xml.out .xml
+		
+		## nettoyer les informations de debug qui apparaissent dans les resultats
+	    #    foreach f (*.xml)
+	    #        cat $f | sed 's;<div class="exaScore">exaScore : @@exaScore{}</div><div class="exaURI">exaURI : @@exaURI{}</div><div class="exaSource">exaSource : @@exaSource{}</div><div class="exaSort">exaSort : @@exaSort{}</div><div class="exaDate">exaDate : @@exaDate{}</div>;;g' >! $f.out
+	    #    end
+	    
+	    #    renamefiles .xml.out .xml
+    endif 
+
+	
+	#  ----------------------------------------------------------------------------------------
+
+	## 24/09/2013 MB : on ajoute l'appel au script patchXmlActuel_hulk 
+	##                 pour "noyer" le score des actuel classees en : SCORE/VPOLD
+	### on le fait en test dans un 1er tps (+ prod)
+
+	 
+   # YE le 03/02/2015 
+   
+    echo "Traitement des scores pour les documents qui datent de + de 3 mois..."
+    echo "patchXmlVp_hulk  -d `pwd ` "
+    patchXmlVp_hulk  -d .
+    echo "Renommage : .xml.vpnewout .xml"
+    renamefiles .xml.vpnewout .xml >& /dev/null
+    echo "Ok"
+   
+    echo "Traitement en fulltexte-type3 pour les cas SCORE/OLD..."
+    echo "patchXmlActuel_hulk  -d `pwd ` "
+    patchXmlActuel_hulk -d .
+    echo "Renommage : .xml.actuelnewout .xml"
+    renamefiles .xml.actuelnewout .xml >& /dev/null
+   echo "Ok"
+  
+popd
+ 
+# -----------------------------------------------------------------------------------------
+
+##-------------------------------------------------------------------------------
+#  03/07/2014 YE/MB : patch de la zapette des actuel TSA : modifier ../../Actuel/../... par ../../TSA/../..
+#      on le fait ds un script pour simplifier la maintenance (d'autres modifs, ...)
+##--------------------------------------------------------------------------------
+echo "********************************************"
+echo "Modification Zappette Actuel TSA en cours..."
+echo "********************************************"
+pushd $actuelLivDir
+	if (-f TSA.xml) then
+		/usr/local/ela/bin/hulk_actuZapette.pl TSA.xml
+		renamefiles .xml.out .xml >& /dev/null
+	endif
+popd	
+# YE le 23/09/2014 Mantis 8232
+# 04/5/2015 SF la redirection du resultat de la commande cat + sed vers un fichier pose prb
+# en effet meme si le fichier source n'existe pas, elle cree le fichier resultat (*.out) et cela pose des prb de parse par la suite
+# pour corriger le prb, j'ajoute un test sur l'existence du fichier avant d'appeler cat + sed
+pushd $actuelLivDir
+	#YE 24/07/2015 Mantis 0011453 
+	# Un controle en test dans un premier temps
+	# if ( $bProdMode == "test") then
+		if (-f actuEL-RJ.xml) then
+			cat actuEL-RJ.xml | sed 's/"ExaRes CD01"/"ExaRes ActuELRJ"/g' >! actuEL-RJ.xml.out
+			renamefiles .xml.out .xml >& /dev/null
+		endif 
+		
+		if (-f actuEL-HSEE.xml) then
+			cat actuEL-HSEE.xml | sed 's/"ExaRes CD05"/"ExaRes ActuELHSE"/g' >! actuEL-HSEE.xml.out
+			renamefiles .xml.out .xml >& /dev/null
+			
+		endif
+		if (-f actuEL-HSEF.xml) then
+			cat actuEL-HSEF.xml | sed 's/"ExaRes CD05"/"ExaRes ActuELHSE"/g' >! actuEL-HSEF.xml.out
+			renamefiles .xml.out .xml >& /dev/null		
+		endif
+		if (-f actuEL-HSES.xml) then
+			cat actuEL-HSES.xml | sed 's/"ExaRes CD05"/"ExaRes ActuELHSE"/g' >! actuEL-HSES.xml.out
+			renamefiles .xml.out .xml >& /dev/null
+		
+		endif		
+		
+		if (-f actuEL-EC.xml) then
+			cat actuEL-EC.xml | sed 's/"ExaRes CD05"/"ExaRes ActuELEC"/g' >! actuEL-EC.xml.out
+			renamefiles .xml.out .xml >& /dev/null
+		endif
+		
+		if (-f actuEL-CE.xml) then
+			cat actuEL-CE.xml | sed 's/"ExaRes CD05"/"ExaRes ActuELCE"/g' >! actuEL-CE.xml.out
+			renamefiles .xml.out .xml >& /dev/null
+		endif
+		# YE/SF 19/02016
+		# MANTIS 7930 
+		# if ( $bProdMode == "test") then
+			if (-f actuEL-TSA.xml) then
+				cat actuEL-TSA.xml | sed 's/"ExaRes CD05"/"ExaRes ActuTSA"/g' >! actuEL-TSA.xml.out
+				renamefiles .xml.out .xml >& /dev/null
+			endif
+		# endif 
+	# endif
+
+	if (-f actuEL-RJ.xml) then
+	# YE le 28/07/2015 
+		# cat actuEL-RJ.xml | sed 's/"ExaRes CD01"/"ExaRes CD05"/g' >! actuEL-RJ.xml.out
+		# renamefiles .xml.out .xml
+		## YE le 26/09/2014 Mantis 8588
+		cat actuEL-RJ.xml | sed 's/ EL\/ACTUEL\/RJ/EL\/ACTUEL\/RJ/g' >! actuEL-RJ.xml.out
+		renamefiles .xml.out .xml >& /dev/null
+	endif
+	## YE le 13/03/2015 
+	if (-f actuEL-RH.xml) then 
+		cat actuEL-RH.xml | sed 's/&//g' >! actuEL-RH.xml.out
+		renamefiles .xml.out .xml >& /dev/null
+	endif 	
+	if ( $bProdMode == "test" && -f actuEL-RJ.xml) then
+		cat actuEL-RJ.xml | sed 's/http:\/\/default\//http:\/\/test.actuel-direction-juridique.fr\//g' >! actuEL-RJ.xml.out
+		\mv actuEL-RJ.xml.out actuEL-RJ.xml	
+	endif
+	# YE le 03/10/2014 Mantis 8635 note 19439
+	if (-f actuEL-RJ.xml) then
+		cat actuEL-RJ.xml | sed 's;actuel-direction-juridique.fr/content/;actuel-direction-juridique.fr/cas?destination=content/;g' >! actuEL-RJ.xml.out
+		\mv actuEL-RJ.xml.out actuEL-RJ.xml
+	endif
+	# YE le 19/01/2015 Mantis 9727
+	# YE le 28/07/2015 
+	# if (-f actuEL-HSE.xml) then
+		# cat actuEL-HSE.xml | sed 's/"ExaRes CD05"/"ExaRes CD21"/g' >! actuEL-HSE.xml.out
+		# renamefiles .xml.out .xml
+	# endif
+	# 04/05/2015 SF ajout nouveaux HSE NPA
+	if (-f actuEL-HSEE.xml) then
+	# YE le 28/07/2015 
+		# cat actuEL-HSEE.xml | sed 's/"ExaRes CD05"/"ExaRes CD21"/g' >! actuEL-HSEE.xml.out
+		# renamefiles .xml.out .xml
+		cat actuEL-HSEE.xml | sed 's/ZAPETTE\/CATEGORIE\/actuEL\/actuEL-HSEE/ZAPETTE\/CATEGORIE\/actuEL\/actuEL-HSE/g' >! actuEL-HSEE.xml.out
+		renamefiles .xml.out .xml >& /dev/null
+	endif
+	if (-f actuEL-HSEF.xml) then
+	# YE le 28/07/2015 
+		# cat actuEL-HSEF.xml | sed 's/"ExaRes CD05"/"ExaRes CD21"/g' >! actuEL-HSEF.xml.out
+		# renamefiles .xml.out .xml
+		cat actuEL-HSEF.xml | sed 's/ZAPETTE\/CATEGORIE\/actuEL\/actuEL-HSEF/ZAPETTE\/CATEGORIE\/actuEL\/actuEL-HSE/g' >! actuEL-HSEF.xml.out
+		renamefiles .xml.out .xml >& /dev/null
+		
+	endif
+	if (-f actuEL-HSES.xml) then
+	# YE le 28/07/2015 
+		# cat actuEL-HSES.xml | sed 's/"ExaRes CD05"/"ExaRes CD21"/g' >! actuEL-HSES.xml.out
+		# renamefiles .xml.out .xml		
+		cat actuEL-HSES.xml | sed 's/ZAPETTE\/CATEGORIE\/actuEL\/actuEL-HSES/ZAPETTE\/CATEGORIE\/actuEL\/actuEL-HSE/g' >! actuEL-HSES.xml.out
+		renamefiles .xml.out .xml >& /dev/null
+		
+	endif
+	
+	if (-f actuEL-RH.xml) then
+		cat actuEL-RH.xml | sed 's/"ExaRes CD05"/"ExaRes ActuEL"/g' >! actuEL-RH.xml.out
+		renamefiles .xml.out .xml >& /dev/null
+	endif
+	# YE le 28/07/2015 
+	# if (-f actuEL-EC.xml) then
+		# cat actuEL-EC.xml | sed 's/"ExaRes CD05"/"ExaRes CD15"/g' >! actuEL-EC.xml.out
+		# renamefiles .xml.out .xml
+	# endif
+	
+	# SF/YE le 20/06/2016
+	# if ( $bProdMode == "test" ) then
+		foreach f  (actuEL-*.xml) 
+			cat $f | sed 's/target="_blank"//g' >! $f.out
+			renamefiles .xml.out .xml >& /dev/null
+			
+			cat $f | sed 's/href="@@exaDocLink{dockey/href="#" onclick="javascript:openExternalLink('\''@@exaDocLink{dockey/g' >! $f.out
+			renamefiles .xml.out .xml >& /dev/null
+			
+			cat $f | sed 's/'']}"/'']}'\'');return false;"/g' >! $f.out
+			renamefiles .xml.out .xml >& /dev/null
+			
+		end
+	# endif
+popd >& /dev/null
+
+#####
+## 14/03/2017 MB : Avec le passage en incrémental, il peut arriver que le delta soit vide
+##                 ==> Le delivery doit etre reconstruit en fonction des ActuEL non vides (c'est plus un fichier statique)
+#####
+
+
+pushd $actuelLivDir >& /dev/null
+
+    echo "\t/////////////////////////////////////////////////////////////////////////"
+    echo "\t1. Parse des URs ActuEl livrés dans $dir_papidoc_source/*.xml :"
+    echo "\t/////////////////////////////////////////////////////////////////////////"
+    mkdir -p erreurs  >& /dev/null
+    \rm -rf  erreurs/*  >& /dev/null
+    parsexml .
+    ls *.xmlerr >& /dev/null
+    if ($status == 0) then
+	echo "\t/////////////////////////////////////////////////////////////////////////"
+	echo "\t2. Ignorer les fichiers qui ne parsent pas :"
+	echo "\t/////////////////////////////////////////////////////////////////////////"
+	foreach f (*.xml)
+	    if (-f $f.xmlerr) then
+	    mv $f* erreurs/
+	    echo "$f ==> Erreur parse. fichier deplace dans $dir_papidoc_source/erreurs/. Les actu de ce fichier ne seront pas traitées."
+	else
+	    echo "$f Ok"
+	endif
+    end
+    else
+	echo "Ok."
+    endif
+
+    set deliveryfile = $actuelDeliveryDir/hulk-delivery-actuel.xml
+    set commentaire = '<\!-- Ajout automatique ActuEL pour ' 
+    echo
+    echo "\t##  "
+    echo "\t##### Reconstruction du delivery en fonction des ActuEL livrées : $deliveryfile #####"
+    echo "\t##  "
+    cat $actuelDeliveryDir/delivery.entities/delivery.header >! $deliveryfile
+    #####
+    ## 14/03/2017 MB : Construction du delivery pour les delta ActuEL non vides...
+    #####
+    echo ""
+    foreach f (actuEL*.xml)
+	## On ajoute l'entité de l'actu courante dans le delivery
+	echo " cat $actuelDeliveryDir/delivery.entities/${f}.entity >> $deliveryfile"
+	echo "" >> $deliveryfile
+	echo  $commentaire "$f : " `date` '-->' >> $deliveryfile
+	cat $actuelDeliveryDir/delivery.entities/${f}.entity >> $deliveryfile			
+    end
+	echo "" >> $deliveryfile
+	echo '</delivery>' >> $deliveryfile
+	echo
+	echo "delivery cree : $deliveryfile"
+	echo
+    endif
+
+    echo "Validation du dossier $PWD"
+    parsexml . $ELA_LIV/dtd/papidoc.dtd
+
+    if ( $status == 0 ) then
+		echo "Validation XML Ok"
+		echo ""
+		echo "\t##  "
+		echo "\t##### Lancement de la synchronisation vers le workflow HULK de $bProdMode"
+		echo "\t##  "
+
+		/usr/local/ela/bin/hulk_syncdata actuel $argTargetPlatform
+
+		set nbpapidocactuel = `ls *xml | wc -l`
+		set hulksyncdatastatus = "code retour $status"
+		set parsexmlstatus = "validation XML OK"
+    else
+		echo "ATTENTION Validation XML KO"
+		echo ""
+		echo "Commande interrompue (pas de synchronisation workflow effectuée)"
+		echo ""
+		set hulksyncdatastatus = "pas de synchro lancée"
+		set parsexmlstatus = "erreur xml présentes dans dir_exalead_xmlerr"
+    endif
+popd >& /dev/null
+
+# -----------------------------------------------------------------------------------------
+
+
+
+Fin:
+
+#$sendmailcmd ytruchot -s "hulk_prepactuel $bProdMode : rapport" -c "hulk_prepactuel $bProdMode se termine : 
+
+echo nb papidoc actuel : $nbpapidocactuel
+echo parse xml : $parsexmlstatus
+echo hulk_syncdata : $hulksyncdatastatus
+
+exit 0

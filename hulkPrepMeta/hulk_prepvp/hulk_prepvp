@@ -1,0 +1,373 @@
+#!/usr/local/bin/tcsh
+# ------------------------------------------------------------------
+# Auteur : Ahmed LAZREG
+# Date	 : 17/02/2012
+#
+# Ce script prepare les papidoc VP pour HULK
+#
+# ------------------------------------------------------------------
+# 26/03/2013 YTR : ajout d'un rapport mail en fin de script
+# ------------------------------------------------------------------
+
+source /usr/local/ela/bin/hulk.csh
+set sendmailcmd = "/usr/local/ela/bin/sendmaildpm"
+
+
+
+## Creer le dossier ./exalead/vp/ s'il n'existe pas
+##set dir_exalead_vp = ${ELA_LIV}/exalead/xml/vp
+set dir_exalead_vp = ${ELA_LIV}/vp/vpdata
+set sMode = "prod"
+set argTargetPlatform = $1
+if ( "$argTargetPlatform" == "-test" || "$argTargetPlatform" == "test") then
+	set sMode = "test"
+    set dir_exalead_vp = ${ELA_LIVTEST}/vp/vpdata
+else if ( "$argTargetPlatform" == "-sbox1" || "$argTargetPlatform" == "sbox1") then
+	set sMode = "sbox1"
+    set dir_exalead_vp = ${ELA_SANDBOX1}/vp/vpdata
+else if ( "$argTargetPlatform" == "-sbox4" || "$argTargetPlatform" == "sbox4") then
+	set sMode = "sbox4"
+    set dir_exalead_vp = ${ELA_SANDBOX4}/vp/vpdata
+endif
+
+
+#$sendmailcmd ytruchot -s "hulk_prepvp $sMode : debut" -c "allez hop c'est parti "
+
+
+mkdir -p $dir_exalead_vp >& /dev/null
+
+set dir_exalead_xmlerr = $dir_exalead_vp/../xmlerr
+
+
+echo "dir_exalead_vp = $dir_exalead_vp"
+echo "dir_exalead_xmlerr = $dir_exalead_xmlerr"
+
+##goto valider_papidoc
+##exit 1
+
+## Supprimer les papidoc vp précédents
+##\rm $dir_exalead_vp/*.xml
+\rm -f $dir_exalead_vp/*.*
+
+##goto supprBalisesHTML
+
+## Récupérer les VP déjà encodées en UTF-8
+## Récupérer l'historique des papidoc VP
+## Pour l'historique => 1 fichier xml = plusieurs articles VP
+
+##set dir_elweb_historique = /elweb/portailel/documents/hulk/historique
+##cp $dir_elweb_historique/*/*.xml $dir_exalead_vp
+##foreach annee (2010 2011 2012)
+##    set dir_elweb_historique = /elweb/portailel/documents/hulk/test/$annee
+##    cp $dir_elweb_historique/*.xml $dir_exalead_vp
+##end
+
+## copie de l'historique
+echo "Copie de l'historique vp vers $dir_exalead_vp"
+echo "\cp /elweb/portailel/documents/hulk/$sMode/20??/*.xml $dir_exalead_vp"
+if ("$sMode" == "sbox1") then
+	\cp /elweb/portailel/documents/hulk/test/20??/*.xml $dir_exalead_vp
+else if ("$sMode" == "sbox4") then
+	\cp /elweb/portailel/documents/hulk/prod/20??/*.xml $dir_exalead_vp
+else
+	\cp /elweb/portailel/documents/hulk/$sMode/20??/*.xml $dir_exalead_vp
+endif
+
+
+
+## Récupérer l'année en cours
+## Pour l'année en cours => 1 fichier xml = 1 article VP
+## Il faut donc concatainer les articles par matiere + annee
+##set annee = "2012"
+if ($sMode == "sbox1") then
+	pushd /elweb/portailel/documents/hulk/test >& /dev/null
+else if ($sMode == "sbox4") then
+	pushd /elweb/portailel/documents/hulk/prod >& /dev/null
+else
+	pushd /elweb/portailel/documents/hulk/$sMode >& /dev/null
+endif
+	# foreach cdxx (CD?? GP??)
+	# YE Le 08/09/2015 Mantis 11202
+	# foreach cdxx (CD?? GP?? GP??? EN23I)
+	foreach cdxx (CD?? GP?? GP??? EN23I)
+		## On rentre dans le dossier CDXX ou GPXX
+		pushd $cdxx >& /dev/null
+			echo "Parcours du dossier $PWD"
+			## Puis on rentre dans chaque année 20AA deux mille et quelque
+			foreach annee (20??)
+			##foreach annee (2011)
+				pushd $annee >& /dev/null
+					echo "Parcours du dossier $PWD"
+					## S'il n'y a pas de fichiers xml on ne va pas plus loin
+					ls *.xml >& /dev/null
+					# if ($status != 0) then
+						# popd >& /dev/null
+						# continue
+					# endif
+
+					## Si des fichiers xml existent alors les concatainer pour créer un papidoc
+					if ($status == 0) then
+					set filename = $dir_exalead_vp/vp_papidoc_${cdxx}_${annee}_auto.xml
+					touch $filename
+					echo '<?xml version="1.0" encoding="UTF-8"?>' >> $filename
+					echo '<PAPI_document_list>' >> $filename
+					##cat *.xml >> $filename
+					##cat *.xml | sed 's/<PAPI_document_list>//g' >> $filename
+					##cat *.xml | sed 's/<PAPI_document_list>//g' | sed 's/<\/PAPI_document_list>//g' | sed 's/<\?xml version=\"1.0\" encoding=\"UTF-8\"\?>//g' >> $filename
+					cat *.xml | sed 's/<PAPI_document_list>//g' | sed 's/<\/PAPI_document_list>//g' | grep -v '<?xml version="1.0" encoding="UTF-8"?>' >> $filename
+
+					echo '</PAPI_document_list>' >> $filename
+					endif
+				popd >& /dev/null ## ici on sort du dossier CDXX/20AA
+			end
+		popd >& /dev/null ## ici on sort du dossier CDXX
+	end
+popd >& /dev/null
+
+## On corrige ici quelque erreurs de saisie
+## type_ouvrage-id => type-ouvrage-id (avec tiret)
+echo "Etape corrections..."
+pushd $dir_exalead_vp >& /dev/null
+foreach f (*.xml)
+    cat $f | sed 's/type_ouvrage-id/type-ouvrage-id/g' | sed 's/&lt;/</g' | sed 's/&gt;/>/g' >! $f.tmp
+
+    ## j'ai constate dans certains fichiers *.xml des entites HTML &amp;entite; mal transcodees
+    ## prevoir de les remplacer plus tard
+    ## exemple : &amp;agrave; 5 km
+    ##
+    ##cat $f | sed 's/type_ouvrage-id/type-ouvrage-id/g' | sed 's/&lt;/</g' | sed 's/&gt;/>/g' | sed 's/&amp;([a-zA-Z]+);/&\1;/g' >! $f.tmp
+    \mv $f.tmp $f
+
+	# 18/05/2016 alazreg mantis 13431 ajouter meta date-edito-since
+	# on copie la valeur de ur-tri dans date-edito-since
+	# utilisation de la commande system sed
+	cat $f | sed -r 's;<PAPI_meta name="ur-tri">([0-9]+)</PAPI_meta>;<PAPI_meta name="ur-tri">\1</PAPI_meta><PAPI_meta name="date-edito-since">\1</PAPI_meta>;g' >! toto.xml
+	\mv toto.xml $f
+end
+
+## 12/03/2013 MB : on ajoute l'appel au script patchXmlVp_hulk (qui etait utilise avant)
+##                 pour "noyer" le score des vp de plus de 3 mois
+### on le fait en test dans un 1er tps
+## 24/09/2013 MB : on reporte en prod
+##if ( "$argTargetPlatform" == "-test" || "$argTargetPlatform" == "test") then
+    echo "Traitement des scores pour les documents qui datent de + de 3 mois..."
+    echo "patchXmlVp_hulk  -d `pwd ` "
+    patchXmlVp_hulk  -d .
+    echo "Renommage : .xml.vpnewout .xml"
+    renamefiles .xml.vpnewout .xml
+    echo "Ok"
+##endif
+popd >& /dev/null
+
+
+# if ($user == "alazreg") then
+	# echo debug exit avant la fin
+	# exit 0
+# endif
+
+## Transcodage iso vers utf-8
+pushd $dir_exalead_vp >& /dev/null
+    foreach f (*.xml)
+	iconv -f ISO-8859-1 -t UTF-8 $f -o $f.out
+    end
+    renamefiles .xml.out .xml
+popd >& /dev/null
+
+supprBalisesHTML:
+## Supprimer les balises HTML des VP
+echo "------------- Supprimer les balises HTML des VP -------------"
+pushd $dir_exalead_vp >& /dev/null
+    foreach f (*.xml)
+	/usr/local/ela/bin/hulk_epure_xml.pl $f    # enlever _test si ok
+	##/usr/local/ela/bin/hulk_epure_xml_lt_gt.pl $f
+    end
+    renamefiles .xmlres.xml .xml
+    
+    ## 09/10/2012 MB : on applique le 2ème script
+    foreach f (*.xml)
+	/usr/local/ela/bin/patch2XmlVP $f
+    end
+    renamefiles .xmlres.xml .xml
+    
+    ## 10/10/2012 alazreg
+    ## suppression de la meta de debug zapette/test/el
+    foreach f (*.xml)
+	cat $f | sed 's;<PAPI_meta name="classement">ZAPETTE/TEST/EL</PAPI_meta>;;g' >! $f.out
+    end
+    renamefiles .xml.out .xml
+    
+    ## nettoyer les informations de debug qui apparaissent dans les resultats
+    foreach f (*.xml)
+    cat $f | sed 's;<div class="exaScore">exaScore : @@exaScore{}</div><div class="exaURI">exaURI : @@exaURI{}</div><div class="exaSource">exaSource : @@exaSource{}</div><div class="exaSort">exaSort : @@exaSort{}</div><div class="exaDate">exaDate : @@exaDate{}</div>;;g' >! $f.out
+    end
+    renamefiles .xml.out .xml
+popd >& /dev/null
+
+
+## 19/06/2014 YE/MB : ajout correctif sur les href mantis : 7623
+##---------------------------------------------------------------------
+print "Ajout correctif sur les href de la vp EL :\n"
+vp_href_fill.pl $dir_exalead_vp >& /dev/null
+pushd $dir_exalead_vp >& /dev/null
+	renamefiles .xml.out .xml
+popd >& /dev/null
+
+valider_papidoc:
+pushd $dir_exalead_vp >& /dev/null
+    set nbpapidocvp = `ls *xml | wc -l`
+    echo "Debut parsexml $dir_exalead_vp $ELA_LIV/dtd/papidoc.dtd"
+    parsexml . $ELA_LIV/dtd/papidoc.dtd >& /dev/null
+    echo "Fin parsexml $dir_exalead_vp $ELA_LIV/dtd/papidoc.dtd"
+
+    ## --------------------------------------------------------------------
+    ## 05/02/2013 AL
+    ## Si des erreurs de parsexml se produisent alors bouger les fichiers en erreur dans un dossier hulk/liv/vp/xmlerr
+    ## $dir_exalead_xmlerr
+    ## --------------------------------------------------------------------
+    ls *.xmlerr >& /dev/null
+    if ($status == 0) then
+	set parsexmlstatus = "erreur xml présentes dans $dir_exalead_xmlerr"
+	mkdir -p $dir_exalead_xmlerr >& /dev/null
+	echo "ERREUR des erreurs rencontrees sur le parsexml" 
+	echo "ERREUR les fichiers non valides sont deplces vers $dir_exalead_xmlerr"
+	foreach f (*.xml)
+	    if (-e $f.xmlerr) then
+		\mv $f $dir_exalead_xmlerr
+		\mv $f.xmlerr $dir_exalead_xmlerr
+	    endif
+	end
+    else
+	set parsexmlstatus = "pas d'erreur xml"
+    endif
+popd >& /dev/null
+
+
+##--------------------------------------------------------------------
+## 28/04/2014 MB : pour cause ajout version VP adaptee pour Dalloz 
+##                 ==> on appelle ici le script duplicVPforDZ
+##                     a utiliser uniquement si on est en mode test
+## resultat du script : creation du dossier vp/vpdataDZ en plus de vp/vpdata 
+##
+# Mantis 7623
+##Ye LE 27/06/2014 VP Dz en prod
+if ( "$sMode" == "test" || "$sMode" == "prod" || "$sMode" == "sbox1" || "$sMode" == "sbox4") then 
+    echo "Preparation d une version de la VP adaptee pour Dalloz..."
+    duplicVPforDZ -$sMode
+    echo "une version de la VP adaptee pour Dalloz est a priori creee dans : vp/vpdataDZ "
+    echo
+	## 19/06/2014 YE/MB : ajout correctif sur les href mantis : 7623
+	##---------------------------------------------------------------------
+	print "Ajout correctif sur les href de la vp DZ :\n";
+	vp_href_fill.pl $dir_exalead_vp/../vpdataDZ
+	pushd $dir_exalead_vp/../vpdataDZ >& /dev/null
+		renamefiles .xml.out .xml
+	popd >& /dev/null
+	valider_papidoc_dz:
+	pushd $dir_exalead_vp/../vpdataDZ >& /dev/null
+		set nbpapidocvp = `ls *xml | wc -l`
+		echo "Debut parsexml $dir_exalead_vp $ELA_LIV/dtd/papidoc.dtd"
+		parsexml . $ELA_LIV/dtd/papidoc.dtd >& /dev/null
+		echo "Fin parsexml $dir_exalead_vp $ELA_LIV/dtd/papidoc.dtd"
+
+		## --------------------------------------------------------------------
+		## 05/02/2013 AL
+		## Si des erreurs de parsexml se produisent alors bouger les fichiers en erreur dans un dossier hulk/liv/vp/xmlerr
+		## $dir_exalead_xmlerr
+		## --------------------------------------------------------------------
+		ls *.xmlerr >& /dev/null
+		if ($status == 0) then
+			set parsexmlstatus = "erreur xml présentes dans $dir_exalead_xmlerr"
+			mkdir -p $dir_exalead_xmlerr >& /dev/null
+			echo "ERREUR des erreurs rencontrees sur le parsexml" 
+			echo "ERREUR les fichiers non valides sont deplces vers $dir_exalead_xmlerr"
+			foreach f (*.xml)
+				if (-e $f.xmlerr) then
+				\mv $f $dir_exalead_xmlerr
+				\mv $f.xmlerr $dir_exalead_xmlerr
+				endif
+			end
+		else
+			set parsexmlstatus = "pas d'erreur xml"
+		endif
+	popd >& /dev/null
+endif
+
+## 28/04/2014 MB : fin modifs
+##--------------------------------------------------------------------
+
+
+
+
+
+
+
+##
+
+
+##
+
+
+
+## --------------------------------------------------------------------
+## 05/02/2013 AL
+## Appel de la commande 'hulk_syncdata vp $sMode'
+## $sMode vaut ici "prod" "test" ou "sandbox1"
+## --------------------------------------------------------------------
+synchroJouve:
+synchro_jouve:
+/usr/local/ela/bin/hulk_syncdata vp -$sMode
+set hulksyncdatastatus = $status
+
+
+#$sendmailcmd ytruchot -s "hulk_prepvp $sMode : rapport" -c "hulk_prepvp $sMode se termine : nb papidoc vp : $nbpapidocvp parse xml : $parsexmlstatus hulk_syncdata : $hulksyncdatastatus"
+
+goto Fin
+
+## Le transcodage est inutile si les VP arrivent deja transcodées en UTF-8
+## Transcoder les caractères ISO en caractères ASCII
+##pushd $dir_exalead_vp >& /dev/null
+##foreach f (*.xml)
+##    /usr/local/ela/bin/lance.trscode -f $f isoasc
+##end
+##renamefiles .xml.asc .xml
+##popd >& /dev/null
+
+## Transcoder les caractères ASCII en UTF-8
+##pushd $dir_exalead_vp >& /dev/null
+##foreach f (*.xml)
+    ##/usr/local/ela/bin/newentities2utf8 ".*.xml" .
+##    /usr/local/ela/bin/newentities2utf8 '.*.xml$' .
+##end
+##renamefiles .xml.asc .xml
+##popd >& /dev/null
+
+## Livrer les VP dans le dossier ./exalead/
+
+Fin:
+
+exit 0
+
+## Le code source dessous n'est plus utilisé car les VP sont corrigées à la source par Laetitia VERDIKT
+
+# Dossier source
+##set dirxmlsource = /elweb/portailel/documents/hulk/AAAA/*.xml
+
+##set dirxml  = /usr/local/ela/cd-rom/elnet/liv_HULK_appli/exalead/vp.utf8.ahmed
+##set dirxml  = /usr/local/ela/cd-rom/elnet/liv_HULK_appli/exalead/vp.utf8
+##set dirxml  = /usr/local/ela/cd-rom/elnet/liv_HULK_appli/exalead/vp.utf8.test
+
+##pushd $dirxml >& /dev/null
+
+## On corrige quelques coquilles dans les XML
+
+##echo ""
+##foreach f (vp_papidoc_*.xmlres.xml)
+##    echo -n "."
+##    ##sed 's/class="ExaResnull>/class="ExaRes">/g' $f >! tmp.xml
+##    cat $f | sed 's/class="ExaRes/class="ExaRes /g' | sed 's/class="ExaResnull/class="ExaRes/g' | sed 's/><div class="ExaTypeDoc"/"><div class="ExaTypeDoc"/g'>! tmp.xml
+##    \mv tmp.xml $f
+##end
+
+##echo ""
+
+##popd >& /dev/null
