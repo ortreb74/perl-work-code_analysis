@@ -1,0 +1,169 @@
+#!/usr/local/bin/perl
+
+# script perl pour Hulk 
+###########################################/
+#PROGRAMME : hulk_actuelReplaceThema
+#Date création :  06/03/2013
+#Auteur : mbaziz
+#------------------------------------------------------------------------------------
+#
+# Résumé : permet de remplacer les thematiques mise par le sst par les thematiques EL
+#          la correspondance est définie dans le csv : /elweb/portailel/documents/hulk/etudes_theme_hulk.csv
+#---------	
+# Règles :
+#---------
+# Exploiter le fichier CSV de correspondance pour transformer la valeur de la méta en une thématique HULK
+# Exemple (voir mantis YT no : 2496)
+# Si on a dans le fichier "brut" Actuelxx.xml ceci :
+#    <PAPI_meta name="classement">ZAPETTE/THEMATIQUE/Contrat de travail</PAPI_meta>
+# ==> on doit le transformer en ceci :
+#    <PAPI_meta name="classement">ZAPETTE/THEMATIQUE/Social/Contrat de travail</PAPI_meta>
+
+# Attention, s'il y a plusieurs thématiques HULK en correspondance (cas de "Durée du travail"), il faut générer plusieurs exemplaires de la méta "classement" :
+#    <PAPI_meta name="classement">ZAPETTE/THEMATIQUE/Paie</PAPI_meta>
+# ==> on doit le transformer en ceci :
+#    <PAPI_meta name="classement">ZAPETTE/THEMATIQUE/Social/Charges sociales - Aides - Exonérations</PAPI_meta>
+#    <PAPI_meta name="classement">ZAPETTE/THEMATIQUE/Social/Rémunération - Avantages sociaux</PAPI_meta>
+#	
+#------------------------------------------------------------------------------------
+# Version : 1.0
+###########################################/
+
+
+use strict;
+use utf8;
+use Encode;
+
+use constant progname => 'hulk_actuelReplaceThema';
+
+# pour délimiter les parties html à nettoyer
+my $noPrintCh1 = "\001";
+my $noPrintCh2 = "\002";
+my $noPrintCh3 = "\003";
+
+# pour délimiter les éléments sous-parties html à nettoyer
+my $noPrintCh4 = "\004";
+my $crChar = "\015";
+
+# le nom du fichier de correspondance : meta ==> thematique Hulk
+## pour eviter tout risque d'erreur, on n'ecrase pas le fichier etudes_theme_hulk.csv
+## car utilise par d'autres programmes
+## a remettre apres tests
+my $correspTab = "/elweb/portailel/documents/hulk/etudes_theme_hulk.csv";
+# my $correspTab = "/elweb/portailel/documents/hulk/etudes_theme_hulk.csv.modifie";
+
+if (scalar @ARGV != 1){ &usage();exit(1);}
+my $nomDuFichier = $ARGV[0];
+my $nomDuFichierRes = "$nomDuFichier".".thema";
+my $ligne ="";
+
+my %mapThema = ();
+
+#==========================================
+# fonction Syntaxe
+#==========================================
+
+sub usage(){
+    print "\n$_\n" if ($_);
+    print "\nSyntaxe :\n";
+    print "\t", progname, " <fichier xml actuEL a traiter>\n\n";  
+    exit(1);
+}
+
+
+
+print "fichier a traiter : $nomDuFichier \n";
+
+# la table de corerspondance meta / thematiques
+##
+
+if (! defined(open(T, "$correspTab" )))
+{
+    print "ERREUR : fichier a traiter intriouvable : $correspTab \n";
+    exit(4);
+}
+my @tableau = <T>;
+chomp(@tableau);
+close(T);
+
+# charger la table de correspondance dans un hashage
+## 
+foreach my $ligne (@tableau) {
+
+    # ne prendre que les lignes : thème actuel RH;;...
+    next if ($ligne !~ m/ actuel RH;/);
+    $ligne =~ s/$crChar//g;
+    my ($not_used1,$not_used2,$meta,@lesThema) = split /;/,$ligne;
+    #print "\t\t$meta\t=====>\t",join("@",@lesThema),"\n";
+    my $epuredListThema = "";
+    
+    foreach my $uneThema (@lesThema) {
+		## ne pas inclure les thematiques vides 
+		if ($uneThema ne "/" && length($uneThema) > 1) {
+			$epuredListThema = $epuredListThema . "::"."$uneThema";
+		}
+    }
+    $epuredListThema =~ s/^::|::$//g;
+    $mapThema{$meta} = $epuredListThema;
+}
+
+foreach my $l (keys %mapThema) {
+    print "************* $l ===> ",$mapThema{$l},"\n";
+}
+
+# le fichier a traiter
+##
+if (! defined(open(F, "$nomDuFichier" ))) {
+    print "ERREUR : fichier a traiter intriouvable : $nomDuFichier \n";
+    exit(4);
+}
+my @tout = <F>;
+my $tout = join("",@tout);
+@tout = split(/$crChar/,$tout);
+close(F);
+
+# remettre les CR
+## 
+for (my $cc = 0;$cc<= $#tout; $cc++) {
+    $tout[$cc] = $tout[$cc]."$crChar";
+}
+
+print "nbre de ligne du fichier $nomDuFichier : ", scalar @tout,"\n";
+
+# le fichier resultat
+##
+if (! defined(open(R, ">$nomDuFichierRes"))) {
+    print "ERREUR : fichier a traiter introuvable : $nomDuFichierRes \n";
+    exit(4);
+}
+
+# traitement de l'export actuel
+## 
+print "\n------------------------------------------------------- traitements ----------------\n";
+foreach my $ligne (@tout){
+    if ($ligne =~ m/<PAPI_meta name=\"classement\">ZAPETTE\/THEMATIQUE\/([^<]{2,})<\/PAPI_meta>/){
+    	# print "\n\tMatche : $ligne";
+		my $meta = $1;
+		if (exists $mapThema{$meta}) {
+			# print "REMPLACER $meta ==> ",$mapThema{$meta},"\n"; 
+			## inserer une ou plusieurs thematiques 
+			###
+			my @lst_thema_hulk = split("::",$mapThema{$meta});
+			my $pattern = $ligne; 
+			foreach my $uneThema(@lst_thema_hulk){
+				my $uneThematique = encode("utf-8",$uneThema);
+				my $lig = "<PAPI_meta name=\"classement\">ZAPETTE/THEMATIQUE/$uneThematique<\/PAPI_meta>$crChar";
+				print R "$lig";
+			}
+		}
+		else {
+			# pas normal, alerter !
+			# print "Warning : la meta : $meta n'est pas dans le fichier de correspondance, cette ligne sera recopiee telle quelle : \n\t$correspTab\n";
+			print R "$ligne";
+		}
+    }
+    else{
+		#print "$ligne";
+		print R "$ligne";
+    }
+}

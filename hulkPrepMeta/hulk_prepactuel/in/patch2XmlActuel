@@ -1,0 +1,229 @@
+#!/usr/local/bin/perl
+
+# script perl pour Hulk 
+###########################################/
+#PROGRAMME : Hulk_epure_xml.pl
+#Date création :  17/02/2012
+#Auteur : mbaziz
+#------------------------------------------------------------------------------------
+# Résumé :
+#-------
+# Cette commande est réalisée dans le cadre du projet Hulk :
+#
+# Résumé : permet de nettoyer le balise html des fichier Hulk :
+#---------	
+# Règles :
+#---------
+# Le pôle web livre plusieurs fichiers XML qui contiennent des articles de la Veille permanente (VP).
+# Chaque article de VP est renseigné dans une balise <PAPI_meta name="fulltext-type2"><![CDATA[<html><head></head><body>...<br /><br /></body></html>]]></PAPI_meta>
+# Ce script permet de nettoyer les balises HTML uniquement dans l'élément <PAPI_meta name="fulltext-type2"><![CDATA[...]]></PAPI_meta>.
+# ne pas éliminer,les balises XML ou bien les balises HTML qui se trouvent dans l'élément <PAPI_meta name="ur-infos"><![CDATA[...]]></PAPI_meta>	
+#	
+#------------------------------------------------------------------------------------
+# Version : 1.0
+###########################################/
+
+
+use strict;
+use utf8;
+
+# pour délimiter les parties html à nettoyer
+my $noPrintCh1 = "\001";
+my $noPrintCh2 = "\002";
+my $noPrintCh3 = "\003";
+
+# pour délimiter les éléments sous-parties html à nettoyer
+my $noPrintCh4 = "\004";
+my $noPrintCh5 = "\005";
+
+if (scalar @ARGV != 1){ &usage();exit(1);}
+my $nomDuFichier = $ARGV[0];
+my $ligne ="";
+
+print "fichier a traiter : $nomDuFichier \n";
+
+#if (! defined(open(F, "<:encoding(utf-8)", $nomDuFichier) ) )
+if (! defined(open(F, "$nomDuFichier" )))
+{
+    # envoyer un message d'erreur
+    return 4;
+}
+my @tout = <F>;
+chomp(@tout);
+my $tout = join($noPrintCh1, @tout);
+#$tout =~ s/[\f\r]+//g;
+
+## pour optimiser les tps de trtt ==> la commande cat $f | sed -e 's/  */ /g' dans le script hulk_prepactuel est remplacée par :
+$tout =~ s/[\s ][\s ]*/ /g;
+
+
+#print "$tout\n";
+#-------------------------------------------------------------
+#           MARQUAGE DES PARTIES A TRAITER
+#-------------------------------------------------------------
+
+
+#-------------------------------------------------------------
+#          Extraction des elements ur-tri
+#-------------------------------------------------------------
+    
+#print "AVANT : $tout\n----------------------\n\n";
+
+## 08/10/2012 MB : suite demande traitts VP
+# Nettoyage des balises html : <html, <body, <div, <p, <stl, <o, <b, <![if
+
+my @papiDocList = $tout =~ m/(<PAPI_document .*?<\/PAPI_document>)/mg;
+print scalar @papiDocList , " Papidocs detectes :\n";
+my $isModified = 0;
+my $dejafait = 0;
+my $cc = 0;
+foreach my $papiDoc (@papiDocList) {
+    #print "papiDoc : \n-----------------------\n$papiDoc\n----------------------\n";
+    ## 08/07/2013 MB : encore un chagment dans les donnees : ==> prevoir (<|&lt;)
+    if ($papiDoc =~ m/(<PAPI_meta\s+name=\"fulltext-type2\"[^>]*?>(&lt;|<)\!\[CDATA\[.+?\]\](&gt;|>)<\/PAPI_meta>)/) {
+    	#print "\t======> MATCHE : $1\n";
+	my @fullTextType2Elems = $papiDoc =~ m/(<PAPI_meta\s+name=\"fulltext-type2\"[^>]*?>(&lt;|<)\!\[CDATA\[.+?\]\](&gt;|>)<\/PAPI_meta>)/g;
+	#print "fullTextType2Elems : \n---------*****-------------\n",join("\n",@fullTextType2Elems),"\n-----*****-------",$#fullTextType2Elems+1  ,"----------\n";
+
+        foreach my $meta_fullType2 (@fullTextType2Elems)  {
+	
+	    # 1. sauvegarder l'ancienne,
+	    my $anc_meta_fullType2 = $meta_fullType2 ;
+	
+	    ##
+	    #   08/10/2012 MB : enlever les <br>, les "&amp;nbsp;", les <![if] et <![endif]>
+	    if ($meta_fullType2 =~ m/(&lt;|<)br(&gt;|>)|(&lt;|<)br\s*?\/(&gt;|>)/) {
+		#print "\tNettoyage des <br \n";
+		$meta_fullType2 =~ s/(&lt;|<)br(&gt;|>)|(&lt;|<)br\s*?\/(&gt;|>)//g;
+		#print "Resultats : $meta_fullType2 \n";
+	    }
+	    ## suite retours LV
+	    while ($meta_fullType2 =~ m/&amp;nbsp;/) {
+		#print "\tRemplacement des &amp;nbsp; \n";
+		$meta_fullType2 =~ s/&amp;nbsp;/ /g;
+		#print "Resultats : $meta_fullType2 \n";
+	    }
+
+	    while ($meta_fullType2 =~ m/<\!\[if[^>]*?>/) {  # <![if !supportLists]>
+		#print "\tNettoyage des <\![if \n";
+		$meta_fullType2 =~ s/<\!\[if[^>]*?>//g;
+		#print "Resultats : $meta_fullType2 \n";
+	    }
+	    
+	    while ($meta_fullType2 =~ m/<\!\[endif[^>]*?>/) {  # <![if !supportLists]>
+			#print "\tNettoyage des <\![endif \n";
+			$meta_fullType2 =~ s/<\!\[endif[^>]*?>//g;
+			#print "Resultats : $meta_fullType2 \n";
+	    }
+
+	   # 2. remplacer les balises
+	    ## 01/07/2013 MB : ajout nettoyage des balises h1/h2/h3/h4/h5 car cause un decalage (indentation) lors des rech. exalead.
+	    ## 08/07/2013 MB : remplacement des < par (&lt;|<) et > par (&gt;|>)
+	    # while ($meta_fullType2 =~ m/(&lt;|<)(html|body|h1|h2|h3|h4|h5|div|p|st1|o|b|span|i|sup|o:p|table|td|tr|a).*?(&gt;|>).*?(&lt;|<)\/\2.*?(&gt;|>)/) {
+			# print "\tNettoyage des <html|body|div|p|st1|o|b|span|i|sup|o:p|table|td|tr\n";
+			# 
+			# $meta_fullType2 =~ s/<(html|body|h1|h2|h3|h4|h5|div|p|st1|o|b|span|i|sup|o:p|table|td|tr)([^>]*?>)(.*?)(<\/\1[^>]*?>)/$3/g;
+			# $meta_fullType2 =~ s/(&lt;|<)(html|body|h1|h2|h3|h4|h5|div|p|st1|o|b|span|i|sup|o:p|table|td|tr|a).*?(&gt;|>)(.*?)(&lt;|<)\/\2.*?(&gt;|>)/$4/g;
+			# print "\nRESultat : \t---|$meta_fullType2|\n";
+	    # } 
+		# |DIV|P|O|B|I|A
+		while ($meta_fullType2 =~ m/(&lt;|<)(html|body|h1|h2|h3|h4|h5|div|p|st1|o|b|span|i|sup|o:p|table|td|tr|a|em|strong|th|thead).*?(&gt;|>).*?(&lt;|<)\/\2.*?(&gt;|>)/) {
+			#print "\tNettoyage des <html|body|div|p|st1|o|b|span|i|sup|o:p|table|td|tr\n";
+			## 
+			## $meta_fullType2 =~ s/<(html|body|h1|h2|h3|h4|h5|div|p|st1|o|b|span|i|sup|o:p|table|td|tr)([^>]*?>)(.*?)(<\/\1[^>]*?>)/$3/g;
+			$meta_fullType2 =~ s/(&lt;|<)(html|body|h1|h2|h3|h4|h5|div|p|st1|o|b|span|i|sup|o:p|table|td|tr|a|em|strong|th|thead).*?(&gt;|>)(.*?)(&lt;|<)\/\2.*?(&gt;|>)/$4/g;
+			#print "\nRESultat : \t---|$meta_fullType2|\n";
+	    }
+		
+		## YE Le 07/07/2014 Mantis 7857 Suppression des balise HTML "MAJUSCULE" dans la meta fulltext-type2 
+		 # while ($meta_fullType2 =~ m/(&lt;|<)(HTML|BODY|H1|H2|H3|H4|H5|DIV|P|ST1|O|B|SPAN|I|SUP|O:P|TABLE|TD|TR|A).*?(&gt;|>).*?(&lt;|<)\/\2.*?(&gt;|>)/) {			
+			# $meta_fullType2 =~ s/(&lt;|<)(HTML|BODY|H1|H2|H3|H4|H5|DIV|P|ST1|O|B|SPAN|I|SUP|O:P|TABLE|TD|TR|A).*?(&gt;|>)(.*?)(&lt;|<)\/\2.*?(&gt;|>)/$4/g;
+			
+	    # }
+		
+	    ##  01/07/2013 MB : ajout traitt des <a href
+	    ## idem + haut
+	    ##while ($meta_fullType2 =~ m/<a href[^>]*?>.*?<\/a>/) {
+	    while ($meta_fullType2 =~ m/(&lt;|<)a href.*?(&gt;|>).*?(&lt;|<)\/a(&gt;|>)/) {
+		print 'dans : =~ m/(&lt;|<)a href.*?(&gt;|>).*?(&lt;|<)\/a(&gt;|>)/', "\n";
+		##$meta_fullType2 =~ s/<a href[^>]*?>(.*?)<\/a>/$1/g;
+		$meta_fullType2 =~ s/(&lt;|<)a href.*?(&gt;|>)(.*?)(&lt;|<)\/a(&gt;|>)/$3/g ;
+		#print "\nRESultat : \t---|$meta_fullType2|\n";
+	    }
+
+
+	    ##
+	    #   08/10/2012 MB : suite demande LV : besoin de supprimer les balises <head>
+	    #                   on les ajoute ici pour ne pas multiplier les scripts
+	    while ($meta_fullType2 =~ m/(&lt;|<)head(&gt;|>)/) {
+			#print "\tNettoyage des <head>\n";
+			$meta_fullType2 =~ s/(&lt;|<)head(&gt;|>).*?(&lt;|<)\/head(&gt;|>)//g;
+			#print "\t---- HEAD --->cc = $cc<---\n";
+	    } 
+	
+		# YE le 08/07/2014
+		# |DIV|P|O|B|I|A
+		
+		while ($meta_fullType2 =~ m/(&lt;|<)(DIV).*?(&gt;|>).*?(&lt;|<)\/\2.*?(&gt;|>)/) {
+			#print "\tNettoyage des <html|body|div|p|st1|o|b|span|i|sup|o:p|table|td|tr\n";
+			## 
+			## $meta_fullType2 =~ s/<(html|body|h1|h2|h3|h4|h5|div|p|st1|o|b|span|i|sup|o:p|table|td|tr)([^>]*?>)(.*?)(<\/\1[^>]*?>)/$3/g;
+			$meta_fullType2 =~ s/(&lt;|<)(DIV).*?(&gt;|>)(.*?)(&lt;|<)\/\2.*?(&gt;|>)/$4/g;
+			#print "\nRESultat : \t---|$meta_fullType2|\n";
+	    }
+		
+	    while ($meta_fullType2 =~ m/(&lt;|<)\/?o:p(&gt;|>)/) {
+		$meta_fullType2 =~ s/(&lt;|<)\/?o:p(&gt;|>)//g;
+	    }
+	    
+	    ##
+	    #   remettre la partie traitée au bon endroit
+	    $tout =~ s/\Q$anc_meta_fullType2\E/$meta_fullType2/ ;
+            #print "\t|---- APRES TRAITTS \n$anc_meta_fullType2 --DEVIENT-> $meta_fullType2 ---|\n";
+	}
+    }  
+    else {
+	print "partie non matchee\n";
+    }
+}
+	    
+	    ##
+	    #   10/10/2012 : suite demande LV : transcoder &amp; dans les url en & tout court
+            #   "(dockey:\'http[^\']+')"
+
+while ($tout =~ m/(dockey:\'http[^\']+?&amp;)/) {
+    #print "\tRemplacement des &amp; dans les URLs\n";
+    #print "  $1 ---> devient \n\t";
+    $tout =~ s/(dockey:\'http[^\']+?)&amp;/$1&/;
+    #print "  /$1&\n";
+}
+
+
+#-------------------------------------------------------------
+#           REMISE EN ETATS DES MARQUEURS ET DU RETOUR CHARIOT
+#-------------------------------------------------------------
+
+
+
+##
+#   08/10/2012 MB : enlever les retours chariots
+#$tout =~ s/$noPrintCh1//g;
+@tout = split(/$noPrintCh1/,$tout);
+
+
+#-------------------------------------------------------------
+#           ECRITURE DU RESULTAT 
+#-------------------------------------------------------------
+
+#open(R, ">:encoding(utf-8)", $nomDuFichier."RES");
+open(R, ">$nomDuFichier"."res.xml");
+print R @tout;
+close(R);
+print "resultat dans : $nomDuFichier"."res.xml\n\n";
+
+
+
+sub usage() {
+    print "Usage :\n";
+    print "\t$0 <fichier xml>\n";
+}

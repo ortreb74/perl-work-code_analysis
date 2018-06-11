@@ -1,0 +1,228 @@
+#!/usr/local/bin/perl
+
+# script perl pour Hulk : assister AL
+###########################################/
+#PROGRAMME : Hulk_epure_xml.pl
+#Date création :  17/02/2012
+#Auteur : mb
+#------------------------------------------------------------------------------------
+# Résumé :
+#-------
+# Cette commande est réalisée dans le cadre du projet Hulk (VP):
+#
+# Résumé : permet de marquer les fichiers XML de la VP dont l'age est > 3 mois
+#---------	
+# Règles :
+#---------
+#	
+#------------------------------------------------------------------------------------
+# Version : 1.0
+###########################################/
+
+
+use strict;
+use utf8;
+
+# pour délimiter les parties html à nettoyer
+my $noPrintCh1 = "\001";
+my $noPrintCh2 = "\002";
+print "args = ", join(" ",@ARGV), "\n";
+if (scalar @ARGV > 2 || scalar @ARGV < 1 || (scalar @ARGV == 2 && $ARGV[0] ne "-d") ){ &usage();exit(1);}
+
+my $nomDuFichier = $ARGV[0];
+my $ligne ="";
+my @tout = ();
+my $tout ="";
+my $isModified = 0;
+my @filesToProcess = ();
+
+
+if (scalar @ARGV == 1) {
+    @filesToProcess = ($ARGV[0]);
+}
+
+if (scalar @ARGV == 2) {
+    if (-d $ARGV[1]) {
+     #	charger la liste des fichiers a traiter
+	opendir(DIR, $ARGV[1] ) || die "Erreur : $ARGV[1] n'a pas pu etre ouvert!\n";
+	@filesToProcess = sort grep { /.*.xml$/ && -f "$ARGV[1]/$_" } readdir(DIR);	
+    }
+    else {
+	print "Erreur : $ARGV[1] n'est pas un repertoire!\n";
+	 &usage();exit(1);
+    }
+}
+
+
+#-------------------------------------------------------------
+#          Il ne reste plus qu'a traiter les fichiers
+#          de @filesToProcess
+#-------------------------------------------------------------
+print "Detection de ",scalar @filesToProcess," fichiers a traiter :\n";#,join(";",@filesToProcess),"\n";
+foreach my $f (@filesToProcess) {
+    &traiter_un_fichier("$ARGV[1]/$f");
+}
+
+
+
+#-------------------------------------------------------------
+#          Pour traiter un dossier 
+#          ==> mettre dans une fonction 
+#-------------------------------------------------------------
+
+sub traiter_un_fichier() {
+    my $nomDuFichier = shift;
+    print "fichier a traiter : $nomDuFichier \n";
+    #if (! defined(open(F, "<:encoding(utf-8)", $nomDuFichier) ) )
+    if (! defined(open(F, "$nomDuFichier" )))
+    {
+	# envoyer un message d'erreur
+	print "Erreur! fichier $nomDuFichier non ouvert \n";
+	return 4;
+    }
+    @tout = <F>;
+    $tout = join("\001", @tout);
+    $tout =~ s/\n/$noPrintCh2/g;
+    
+    
+#-------------------------------------------------------------
+#          Extraction des elements ur-tri
+#-------------------------------------------------------------
+    
+#print "AVANT : $tout\n----------------------\n\n";
+
+    my @papiDocList = $tout =~ m/(<PAPI_document .*?<\/PAPI_document>)/mg;
+    $isModified = 0;
+    my $dejafait = 0;
+    foreach my $papiDoc (@papiDocList) {
+	# print "papiDoc : \n-----------------------\n$papiDoc\n----------------------\n";
+	my @urTriElems = $papiDoc =~ m/(<PAPI_meta\s+name=\"ur-tri\"[^>]*?>.*?<\/PAPI_meta>)/mg;
+	# print "urTriElems : \n----------------------\n",join("\n",@urTriElems),"\n----------------------\n";
+	
+	foreach my $meta_ur_tri (@urTriElems)  {
+	    if ($meta_ur_tri =~ m/<PAPI_meta name="ur-tri">([^<]*?)<\/PAPI_meta>/) {
+		
+		my $date = $1;
+		if ( $date =~ m/([0-9]{4})([0-9]{2})([0-9]{2})/g) {
+		    my ($annee,$mois,$jour) = ($1,$2,$3);
+		    #print "=================> Date = $date  : Nbre de jours :", getNbJours($annee,$mois,$jour),"\n";
+		    ## voir si le fichier est à marquer 
+		    if (getNbJours($annee,$mois,$jour) > 90)  {
+			## le fichier doit être marqué ...         
+			
+			my $papiDocAnc = $papiDoc;
+			$papiDoc =~ s/SCORE\/VPNEW/SCORE\/VPOLD/g;
+
+                        ## 10/09/2013 MB : suite demande redaction mantis 4452 : 
+			##                 Le titre ne doit plus etre en fulltext-type6 mais en fulltext-type3 (comme les chapeaux)
+			$papiDoc =~ s/fulltext\-type6/fulltext\-type3/g; 
+			## fin ajouts MB : mantis 4452
+
+			$tout =~ s/\Q$papiDocAnc\E/$papiDoc/g;
+			
+			## ... et un fichier resultat doir être créé (plus loin)
+			if ($dejafait != 1){ 
+			    print "\t1 ou +sieurs meta_ur_tri detectee(s) avec date > 90 jours\n"; 
+			    print "\t    ==> le fichier sera modifie.\n" ;
+			    $dejafait = 1;
+			}
+			$isModified = 1;
+			
+		    }	
+		}  
+	    }
+	}   
+    }
+   
+#-------------------------------------------------------------
+#           REMISE EN ETATS DES MARQUEURS ET DU RETOUR CHARIOT
+#-------------------------------------------------------------
+    $tout =~ s/$noPrintCh2/$noPrintCh1/g;
+    @tout = split(/$noPrintCh1/,$tout);
+    
+    
+#-------------------------------------------------------------
+#           ECRITURE DU RESULTAT SI MODIFS
+#-------------------------------------------------------------
+    
+    if ($isModified == 1) {
+        #open(R, ">:encoding(utf-8)", "$nomDuFichier".".vpnewout");
+	open(R, ">$nomDuFichier".".vpnewout");
+	print R @tout;
+	close(R);
+	print "resultat dans : $nomDuFichier".".vpnewout\n\n";
+    }
+    else {
+	print "Pas de modifs pour le fichier : $nomDuFichier\n\n";
+    }
+}
+
+
+
+
+
+
+#========================================================
+# fonction date : retourne une réfèrence à un hashage contenant le champ date (jj-mm-aaaa),
+# et d'autres champs du fichier en paramètre ou de la date en cours si pa sde params
+#--------------------------------------------------------
+
+sub date {
+
+  my $time = shift || time;    #$time par defaut vaut le time actuel
+  my ( $seconde, $minute, $heure, $jour, $mois, $annee, $jour_semaine, $jour_annee, $heure_hiver_ou_ete )
+    = localtime($time);
+  $mois  += 1;
+  $annee += 1900;
+
+  # On rajoute 0 si le chiffre est compris entre 1 et 9
+  foreach ( $seconde, $minute, $heure, $jour, $mois, $annee ) {
+    s/^(\d)$/0$1/;
+  }
+
+  my %date = (
+    "date"         => "$jour-$mois-$annee",
+    "heure"        => "$heure:$minute:$seconde",
+    "jour_semaine" => $jour_semaine,
+    "jour_annee"   => $jour_annee,
+    "hiverOuEte"   => $heure_hiver_ou_ete,
+  );
+  return \%date;
+
+}
+
+#========================================================
+# fonction getNbJours : retourne l'âge du fichier en parametre
+# en nbre de mois.
+#--------------------------------------------------------
+
+sub getNbJours(){
+
+    #------------------------------------------------------------------------------------------------------------
+    # fonction stat retourne une liste : prendre la date de modification mtime
+    # my ($dev,$ino,$mode,$nlink,$uid,$gid,$rdev,$size,$atime,$mtime,$ctime,$blksize,$blocks) = stat("$fichier");
+    #------------------------------------------------------------------------------------------------------------
+    my $anneeF = shift;
+    my $moisF = shift;
+    my $jourF = shift;
+
+    # recuperer les infos de la date en cours
+    #----------------------------------------
+    my $date = date();
+    my ($jourC,$moisC,$anneeC) = split(/\-/,$$date{"date"});
+
+    # comparer
+    #----------------------------------------
+    # print "XML =>$anneeF-$moisF-$jourF\n";
+    # print "Courant =>$anneeC-$moisC-$jourC\n";
+    my $nbJours = ($anneeC-$anneeF)*12*30 + ($moisC-$moisF)*30 + ($jourC-$jourF);
+    # print "nbJours =>$nbJours\n";
+    return $nbJours;
+
+}
+
+sub usage() {
+    print "Usage :\n";
+    print "\tpatchXml.pl <fichier xml>\n";
+    print "   ou\n\tpatchXml.pl -d <repertoire>\n";
+}
