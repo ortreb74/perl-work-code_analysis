@@ -16,6 +16,14 @@ la même méthode sur les deux scripts
 
 * transformation simple
 * transformation d'HTML embarqué
-* le tout
+* le tout en boucle
 * déplacement de fichiers
 * création de delivery (Hulk Data Convertor)
+
+On nomme les étapes par le script principal mais il comprend aussi des sous étapesApril22;
+
+* hulk_actuelReplaceThema
+* patch2XmlActuel
+* patchXmlVp_hulk
+* hulk_actuZapette
+* création delivery
