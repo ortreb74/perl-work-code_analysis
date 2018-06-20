@@ -20,7 +20,7 @@ la même méthode sur les deux scripts
 * déplacement de fichiers
 * création de delivery (Hulk Data Convertor)
 
-On nomme les étapes par le script principal mais il comprend aussi des sous étapesApril22;
+On nomme les étapes par le script principal mais il comprend aussi des sous étapes
 
 * hulk_actuelReplaceThema
 * patch2XmlActuel
