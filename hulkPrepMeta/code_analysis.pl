@@ -19,10 +19,11 @@ use warnings;
 # column 4 : bloc : this is an id that define a logical group of the script
 # column 5 : value
 
-my $script = "hulk_prepactuel";
+my $program = "hulk_prepactuel";
+my $module = "hulk_actuelReplaceThema";
 
-my $inputFileName = "$script/in/$script";
-my $outputFileName = "$script/out/analysis_table.txt";
+my $inputFileName = "$program/in/$module";
+my $outputFileName = "$program/out/analysis_table.txt";
 
 print "Lecture du fichier : $inputFileName\n";
 open (my $inputFile, '<', $inputFileName) or die "Could not open file $inputFileName";
