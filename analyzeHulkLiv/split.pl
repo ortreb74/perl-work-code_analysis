@@ -27,9 +27,11 @@ system("mkdir $outputDirectory 2>/dev/null");
 
 my $blocnumber = 1;
 my $outputFileName = $outputDirectory . "/" . "bloc-" . $blocnumber . ".txt";
+my $outputScriptName = $outputDirectory . "/" . "bloc-" . $blocnumber . ".sh";
 
 print "Ecriture du fichier : $outputFileName\n";
 open (my $outputFile, '>', $outputFileName) or die "Could not open file $outputFileName";
+open (my $outputScript, '>', $outputScriptName) or die "Could not open file $outputScriptName";
 
 my $root = 1;
 
@@ -61,13 +63,17 @@ while ($line = <$inputFile>) {
 		close($outputFile);
 		$blocnumber++;
 		$outputFileName = $outputDirectory . "/" . "bloc-" . $blocnumber . ".txt";
+		$outputScriptName = $outputDirectory . "/" . "bloc-" . $blocnumber . ".sh";
 
 		print "Ecriture du fichier : $outputFileName\n";
+		print "Ecriture du fichier : $outputScriptName\n";
 		open ($outputFile, '>', $outputFileName) or die "Could not open file $outputFileName";		
+		open ($outputScript, '>', $outputScriptName) or die "Could not open file $outputScriptName";
 	}
 	
 	$root = ($depth == 0) ? 1 : 0;	
 	
 	print $outputFile $lineNumber . "\t" . $type . "\t" . $depth . "\t" . $code_line;	
+	print $outputScript $code_line;	
 }
 
