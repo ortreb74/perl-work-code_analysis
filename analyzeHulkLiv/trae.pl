@@ -8,10 +8,8 @@ use warnings;
 # @indlede : liste des mots qui marquent l'ouverture d'un bloc
 # @lukke : liste des mots qui marquent la fermeture d'un bloc
 
-my @indlede = ("pushd");
-my @lukke = ("popd");
-
-my %indleke_lukke = ( "pushd" => 1, "popd" => -1 ); 
+my %indlede = ( "pushd" => 1, "then" => 1 );
+my %lukke = ( "popd" => -1, "endif" => -1 );
 
 # $dybde : profondeur déduite des deux précédents
 
@@ -54,8 +52,8 @@ while ($line = <$inputFile>) {
 		my @words = split(" ",$code_line);	
 		
 		foreach my $word (@words) {
-			if (exists ($indleke_lukke{$word})) {
-				$dybde += $indleke_lukke{$word};
+			if (exists ($indlede{$word})) {
+				$dybde += 1;
 			}
 		}
 		
@@ -63,4 +61,14 @@ while ($line = <$inputFile>) {
 	
 	print $outputFile $lineNumber . "\t" . $type . "\t" . $dybde . "\t" . $code_line;	
 	
+	if ($type eq "code") {
+		my @words = split(" ",$code_line);	
+		
+		foreach my $word (@words) {
+			if (exists ($lukke{$word})) {
+				$dybde -= 1;
+			}
+		}
+		
+	}
 }

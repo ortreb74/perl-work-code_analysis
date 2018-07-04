@@ -33,7 +33,7 @@ print "Ecriture du fichier : $outputFileName\n";
 open (my $outputFile, '>', $outputFileName) or die "Could not open file $outputFileName";
 open (my $outputScript, '>', $outputScriptName) or die "Could not open file $outputScriptName";
 
-my $root = 1;
+my $previous_depth = 0;
 
 # Read the input
 my $line = "";
@@ -59,7 +59,7 @@ while ($line = <$inputFile>) {
 	
 	$code_line .= $columns[$#columns];
 	
-	if ($depth > 0 && $root == 1) {
+	if (($depth == 1 && $previous_depth == 0) || ($depth == 0 && $previous_depth == 1)) {
 		close($outputFile);
 		$blocnumber++;
 		$outputFileName = $outputDirectory . "/" . "bloc-" . $blocnumber . ".txt";
@@ -71,7 +71,7 @@ while ($line = <$inputFile>) {
 		open ($outputScript, '>', $outputScriptName) or die "Could not open file $outputScriptName";
 	}
 	
-	$root = ($depth == 0) ? 1 : 0;	
+	$previous_depth = $depth;	
 	
 	print $outputFile $lineNumber . "\t" . $type . "\t" . $depth . "\t" . $code_line;	
 	print $outputScript $code_line;	
