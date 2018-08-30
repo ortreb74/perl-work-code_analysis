@@ -8,8 +8,9 @@ use warnings;
 # @indlede : liste des mots qui marquent l'ouverture d'un bloc
 # @lukke : liste des mots qui marquent la fermeture d'un bloc
 
-my %indlede = ( "pushd" => 1, "then" => 1 );
-my %lukke = ( "popd" => -1, "endif" => -1 );
+my %indlede = ( "pushd" => 1, "then" => 1, "foreach" => 1, "while" => 1);
+my %lukke = ( "popd" => -1, "endif" => -1, "end" => 1 );
+my %rake = ("else" => 0);
 
 # $dybde : profondeur déduite des deux précédents
 
@@ -28,12 +29,13 @@ open (my $outputFile, '>', $outputFileName) or die "Could not open file $outputF
 
 my $line = "";
 while ($line = <$inputFile>) {	
-
+	## lecture de la table
+	
 	my @columns = split("\t",$line);
 	
 	if ($#columns < 2) {
 		print $line;
-		continue;
+		next;
 	}
 	
 	my $lineNumber = $columns[0];
@@ -45,30 +47,33 @@ while ($line = <$inputFile>) {
 	for (my $i = 2 ; $i < $#columns ; $i++) {						
 		$code_line .= "\t" . $columns[$i];
 	}
-		
 	$code_line .= $columns[$#columns];
-
+	
+	## calcul de la profondeur
+	my $delta_dybde = 0;	
 	if ($type eq "code") {
 		my @words = split(" ",$code_line);	
 		
 		foreach my $word (@words) {
+			if (exists ($rake{$word})) {
+				# le mot est ignoré quand il fait partie
+				# d'un mot clef rateau
+				last;
+			}
+			
 			if (exists ($indlede{$word})) {
 				$dybde += 1;
+				last;
 			}
-		}
-		
-	}
-	
-	print $outputFile $lineNumber . "\t" . $type . "\t" . $dybde . "\t" . $code_line;	
-	
-	if ($type eq "code") {
-		my @words = split(" ",$code_line);	
-		
-		foreach my $word (@words) {
+			
 			if (exists ($lukke{$word})) {
-				$dybde -= 1;
-			}
-		}
-		
-	}
+				$delta_dybde -= 1;
+				last;
+			}			
+		}		
+	}	
+	
+	print $outputFile $lineNumber . "\t" . $type . "\t" . $dybde . "\t" . $code_line;		
+	
+	$dybde += $delta_dybde;
 }
