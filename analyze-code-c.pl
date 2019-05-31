@@ -41,9 +41,9 @@ while ($line = <$inputFile>) {
 	if ($line =~ /^\s*$/) {
 		$type = "blank";
 	}	
-	if ($line =~ /^\s*#/) {
+	if ($line =~ m@^\s*//@) {
 		$type = "comment";
-	} elsif ($line =~ /^\s*echo/) {
+	} elsif ($line =~ /^\s*cerr <</) {
 		$type = "log";
 	}	
 	

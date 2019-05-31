@@ -13,8 +13,8 @@ use Term::ANSIColor;
 
 my %indlede = ( "{" => 1);
 my %lukke = ( "}" => -1);
-my %rake = ();
-my @linet = (); # ("if\.\*;\\s*\$");
+my @rake = ("else");
+my @linet = ("else\.\*;\\s*\$");
 
 # $dybde : profondeur déduite des deux précédents
 
@@ -56,38 +56,22 @@ while ($line = <$inputFile>) {
 	## calcul de la profondeur
 	my $delta_dybde = 0;	
 	if ($type eq "code") {
-	
-		my $oneLineBloc = 0;
 		
-		foreach my $regexp (@linet) {
-			if ($code_line =~ /$regexp/) {
-				print $code_line;
-				$oneLineBloc = 1;
-				last;
-			}
-		}
-	
-		if (! $oneLineBloc) {
-			my @words = split(" ",$code_line);	
+		my $flag = 1;
+		
+		for (my $offset = 0 ; $offset < length($code_line); $offset++) {
+			my $char = substr($code_line, $offset, 1);
 			
-			foreach my $word (@words) {
-				if (exists ($rake{$word})) {
-					# le mot est ignoré quand il fait partie
-					# d'un mot clef rateau
-					last;
-				}
-				
-				if (exists ($indlede{$word})) {
-					$dybde += 1;
-					last;
-				}
-				
-				if (exists ($lukke{$word})) {
-					$delta_dybde -= 1;
-					last;
-				}			
-			}	
-		}
+			if ($char eq "{" && $flag) {
+				$dybde += 1;
+			}
+			
+			if ($char eq "}" && $flag) {
+				$dybde -= 1;
+			}
+			
+			$flag =  ! ($char eq "/");
+		}			
 	}	
 	
 	print $outputFile $lineNumber . "\t" . $type . "\t" . $dybde . "\t" . $code_line;		
